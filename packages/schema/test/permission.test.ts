@@ -26,14 +26,16 @@ describe("permission timeouts", () => {
     expect(() => decodeRule({ action: "shell", resource: "*", effect: "ask", timeout: "5 fortnights" })).toThrow()
   })
 
-  test("round-trips non-compact durations through encode and decode", () => {
-    for (const timeout of ["-2 seconds", "Infinity", "-Infinity"]) {
-      const rule = decodeRule({ action: "shell", resource: "*", effect: "ask", timeout })
-      expect(decodeRule(encodeRule(rule))).toEqual(rule)
+  test("accepts positive fractional compact durations", () => {
+    const rule = decodeRule({ action: "shell", resource: "*", effect: "ask", timeout: "0.5s" })
+    expect(Permission.timeoutMillis(rule.timeout!)).toBe(500)
+  })
+
+  test("rejects non-positive and non-finite durations", () => {
+    for (const timeout of ["0s", "0 seconds", "0.0m", "-1s", "-2 seconds", "Infinity", "-Infinity"]) {
+      expect(() => decodeRule({ action: "shell", resource: "*", effect: "ask", timeout })).toThrow()
+      expect(Permission.timeoutMillis(timeout)).toBeUndefined()
     }
-    expect(Permission.timeoutMillis("-2 seconds")).toBe(-2_000)
-    expect(Permission.timeoutMillis("Infinity")).toBeUndefined()
-    expect(Permission.timeoutMillis("-Infinity")).toBeUndefined()
   })
 
   test("omits an unset rule timeout when encoding", () => {

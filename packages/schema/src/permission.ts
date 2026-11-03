@@ -73,10 +73,13 @@ const timeoutUnitMillis = {
   d: 86_400_000,
 } as const
 
-const compactTimeout = /^([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m|h|d)$/
+const positiveNumber = "(?:[1-9][0-9]*(?:\\.[0-9]+)?|0*\\.[0-9]*[1-9][0-9]*)"
 
-const timeoutString =
-  /^(?:[0-9]+(?:\.[0-9]+)?\s*(?:ms|s|m|h|d)|-?[0-9]+(?:\.[0-9]+)?\s+(?:nano|nanos|micro|micros|milli|millis|second|seconds|minute|minutes|hour|hours|day|days|week|weeks)|-?Infinity)$/
+const compactTimeout = new RegExp(`^(${positiveNumber})\\s*(ms|s|m|h|d)$`)
+
+const timeoutString = new RegExp(
+  `^(?:${positiveNumber}\\s*(?:ms|s|m|h|d)|${positiveNumber}\\s+(?:nano|nanos|micro|micros|milli|millis|second|seconds|minute|minutes|hour|hours|day|days|week|weeks))$`,
+)
 
 const parseFullTimeout = Schema.decodeUnknownOption(Schema.DurationFromString)
 
@@ -84,18 +87,18 @@ const parseTimeout = (value: string) => {
   const compact = compactTimeout.exec(value)
   if (compact) {
     const millis = Number(compact[1]) * timeoutUnitMillis[compact[2] as keyof typeof timeoutUnitMillis]
-    return Number.isFinite(millis) ? Option.some(Duration.millis(millis)) : Option.none()
+    return Number.isFinite(millis) && millis > 0 ? Option.some(Duration.millis(millis)) : Option.none()
   }
   return parseFullTimeout(value)
 }
 
-/** Milliseconds in a timeout value, or `undefined` when it is not a finite duration. */
+/** Milliseconds in a positive finite timeout value, or `undefined` when it is invalid. */
 export const timeoutMillis = (value: string) => {
   const millis = Option.match(parseTimeout(value), {
     onNone: () => undefined,
     onSome: (duration) => Duration.toMillis(duration),
   })
-  return Number.isFinite(millis) ? millis : undefined
+  return millis !== undefined && Number.isFinite(millis) && millis > 0 ? millis : undefined
 }
 
 const Timeout = Schema.String.check(Schema.isPattern(timeoutString)).annotate({
