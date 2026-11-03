@@ -1,5 +1,5 @@
 import { createStore } from "solid-js/store"
-import { createMemo, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
 import { Portal, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useTheme, useThemes } from "../../context/theme"
@@ -141,6 +141,10 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
   })
 
   const theme = useTheme()
+  const timer = createMemo(() => {
+    if (props.request.timeout === undefined || props.request.expires === undefined) return
+    return { timeout: props.request.timeout, expires: props.request.expires }
+  })
 
   function reply(value: PermissionReply, message?: string) {
     void data.session.permission
@@ -154,6 +158,7 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
         <RejectPrompt
           action={props.request.action}
           instance={props.request.id}
+          timer={timer()}
           onConfirm={(message) => {
             reply("reject", message || undefined)
           }}
@@ -249,11 +254,7 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
               }
               escapeKey="reject"
               fullscreen
-              timer={
-                props.request.timeout !== undefined && props.request.expires !== undefined
-                  ? { timeout: props.request.timeout, expires: props.request.expires }
-                  : undefined
-              }
+              timer={timer()}
               onSelect={(option) => {
                 if (option === "always") {
                   reply("always")
@@ -283,9 +284,34 @@ export function permissionSemanticLabel(action: string, title?: string) {
   return `Permission required: ${title ?? action}`
 }
 
+function createPermissionNow(timer: () => { timeout: number; expires: number } | undefined) {
+  const [now, setNow] = createSignal(Date.now())
+  let interval: ReturnType<typeof setInterval> | undefined
+  const stop = () => {
+    if (interval === undefined) return
+    clearInterval(interval)
+    interval = undefined
+  }
+  createEffect(() => {
+    const value = timer()
+    stop()
+    const current = Date.now()
+    setNow(current)
+    if (!value || permissionTimerRemaining(value.expires, value.timeout, current) <= 0) return
+    interval = setInterval(() => {
+      const next = Date.now()
+      setNow(next)
+      if (permissionTimerRemaining(value.expires, value.timeout, next) <= 0) stop()
+    }, 250)
+  })
+  onCleanup(stop)
+  return now
+}
+
 function RejectPrompt(props: {
   action: string
   instance: string
+  timer?: { timeout: number; expires: number }
   onConfirm: (message: string) => void
   onCancel: () => void
 }) {
@@ -295,6 +321,7 @@ function RejectPrompt(props: {
   const cursorStyle = useCursorStyle()
   const dimensions = useTerminalDimensions()
   const narrow = createMemo(() => dimensions().width < 80)
+  const now = createPermissionNow(() => props.timer)
   Keymap.createLayer(() => ({
     mode: "base",
     commands: [
@@ -343,74 +370,82 @@ function RejectPrompt(props: {
         </box>
       </box>
       <box
-        flexDirection={narrow() ? "column" : "row"}
+        flexDirection="column"
         flexShrink={0}
+        gap={1}
         paddingTop={1}
         paddingLeft={2}
         paddingRight={3}
         paddingBottom={1}
         backgroundColor={theme.decrease(theme.background.raised.base)}
-        justifyContent={narrow() ? "flex-start" : "space-between"}
-        alignItems={narrow() ? "flex-start" : "center"}
-        gap={1}
       >
-        <textarea
-          id="session.permission.reject.message"
-          ref={(val: TextareaRenderable) => {
-            input = val
-            SimulationSemantics.bind(() => ({
-              instance: props.instance,
-              role: "textbox",
-              label: "Rejection reason",
-              focused: val.focused,
-              disabled: false,
-            }))(val)
-            val.traits = { status: "REJECT" }
-          }}
-          focused={enabled()}
-          textColor={theme.text.base}
-          focusedTextColor={theme.text.base}
-          cursorColor={theme.text.base}
-          cursorStyle={cursorStyle()}
-        />
+        <Show when={props.timer}>
+          {(timer) => <PermissionTimer timer={timer()} expanded={false} now={now()} />}
+        </Show>
         <box
-          id="session.permission.reject.actions"
-          ref={SimulationSemantics.bind(() => ({
-            instance: props.instance,
-            role: "group",
-            label: "Rejection actions",
-          }))}
-          flexDirection="row"
-          gap={2}
-          flexShrink={0}
+          flexDirection={narrow() ? "column" : "row"}
+          justifyContent={narrow() ? "flex-start" : "space-between"}
+          alignItems={narrow() ? "flex-start" : "center"}
+          gap={1}
         >
+          <textarea
+            id="session.permission.reject.message"
+            ref={(val: TextareaRenderable) => {
+              input = val
+              SimulationSemantics.bind(() => ({
+                instance: props.instance,
+                role: "textbox",
+                label: "Rejection reason",
+                focused: val.focused,
+                disabled: false,
+              }))(val)
+              val.traits = { status: "REJECT" }
+            }}
+            focused={enabled()}
+            textColor={theme.text.base}
+            focusedTextColor={theme.text.base}
+            cursorColor={theme.text.base}
+            cursorStyle={cursorStyle()}
+          />
           <box
-            id="session.permission.reject.confirm"
+            id="session.permission.reject.actions"
             ref={SimulationSemantics.bind(() => ({
               instance: props.instance,
-              role: "button",
-              label: "Confirm rejection",
-              disabled: false,
+              role: "group",
+              label: "Rejection actions",
             }))}
-            onMouseUp={() => props.onConfirm(input.plainText)}
+            flexDirection="row"
+            gap={2}
+            flexShrink={0}
           >
-            <text fg={theme.text.base}>
-              enter <span style={{ fg: theme.text.muted }}>confirm</span>
-            </text>
-          </box>
-          <box
-            id="session.permission.reject.cancel"
-            ref={SimulationSemantics.bind(() => ({
-              instance: props.instance,
-              role: "button",
-              label: "Cancel rejection",
-              disabled: false,
-            }))}
-            onMouseUp={props.onCancel}
-          >
-            <text fg={theme.text.base}>
-              esc <span style={{ fg: theme.text.muted }}>cancel</span>
-            </text>
+            <box
+              id="session.permission.reject.confirm"
+              ref={SimulationSemantics.bind(() => ({
+                instance: props.instance,
+                role: "button",
+                label: "Confirm rejection",
+                disabled: false,
+              }))}
+              onMouseUp={() => props.onConfirm(input.plainText)}
+            >
+              <text fg={theme.text.base}>
+                enter <span style={{ fg: theme.text.muted }}>confirm</span>
+              </text>
+            </box>
+            <box
+              id="session.permission.reject.cancel"
+              ref={SimulationSemantics.bind(() => ({
+                instance: props.instance,
+                role: "button",
+                label: "Cancel rejection",
+                disabled: false,
+              }))}
+              onMouseUp={props.onCancel}
+            >
+              <text fg={theme.text.base}>
+                esc <span style={{ fg: theme.text.muted }}>cancel</span>
+              </text>
+            </box>
           </box>
         </box>
       </box>
@@ -421,24 +456,22 @@ function RejectPrompt(props: {
 function PermissionTimer(props: {
   timer: { timeout: number; expires: number }
   expanded: boolean
+  now: number
 }) {
   const theme = useTheme()
   const dimensions = useTerminalDimensions()
-  const [now, setNow] = createSignal(Date.now())
-  const interval = setInterval(() => setNow(Date.now()), 250)
-  onCleanup(() => clearInterval(interval))
 
-  const remaining = createMemo(() => permissionTimerRemaining(props.timer.expires, props.timer.timeout, now()))
+  const remaining = createMemo(() => permissionTimerRemaining(props.timer.expires, props.timer.timeout, props.now))
   const label = createMemo(() => permissionTimerLabel(remaining()))
   const phase = createMemo(() => permissionTimerPhase(remaining(), props.timer.timeout))
   const cells = createMemo(() => permissionTimerBarCells(dimensions().width, props.expanded, label()))
   const bar = createMemo(() => permissionTimerBar(remaining(), props.timer.timeout, cells()))
   const fill = createMemo(() =>
     phase() === "info"
-      ? theme.background.feedback.info.base
+      ? theme.text.feedback.info.base
       : phase() === "warning"
-        ? theme.background.feedback.warning.base
-        : theme.background.feedback.error.base,
+        ? theme.text.feedback.warning.base
+        : theme.text.feedback.error.base,
   )
   const text = createMemo(() =>
     phase() === "info"
@@ -447,6 +480,7 @@ function PermissionTimer(props: {
         ? theme.text.feedback.warning.base
         : theme.text.feedback.error.base,
   )
+  const labelText = createMemo(() => (bar().filled.length + bar().empty.length > 0 ? ` ${label()}` : label()))
 
   return (
     <box flexDirection="row" flexShrink={0}>
@@ -454,7 +488,7 @@ function PermissionTimer(props: {
         <span style={{ fg: fill() }}>{bar().filled}</span>
         <span style={{ fg: theme.text.faint }}>{bar().empty}</span>
       </text>
-      <text fg={text()}> {label()}</text>
+      <text fg={text()}>{labelText()}</text>
     </box>
   )
 }
@@ -481,6 +515,7 @@ export function SessionQuestion<const T extends Record<string, string>>(props: {
     selected: keys[0],
     expanded: false,
   })
+  const now = createPermissionNow(() => props.timer)
   const narrow = createMemo(() => dimensions().width < 80)
   const shortcuts = Keymap.useShortcuts()
   const id = () => props.id ?? "session.permission"
@@ -605,7 +640,7 @@ export function SessionQuestion<const T extends Record<string, string>>(props: {
         backgroundColor={theme.decrease(theme.background.raised.base)}
       >
         <Show when={props.timer}>
-          {(timer) => <PermissionTimer timer={timer()} expanded={store.expanded} />}
+          {(timer) => <PermissionTimer timer={timer()} expanded={store.expanded} now={now()} />}
         </Show>
         <box
           flexDirection={narrow() ? "column" : "row"}

@@ -55,10 +55,13 @@ test("moves the countdown through info, warning and error phases", () => {
 
 test("sizes the bar from the footer width and clamps it", () => {
   expect(permissionTimerBarCells(120, false, "1:00")).toBe(60)
-  expect(permissionTimerBarCells(60, false, "1:00")).toBe(49)
-  expect(permissionTimerBarCells(40, false, "1:00")).toBe(29)
-  expect(permissionTimerBarCells(40, true, "1:00")).toBe(25)
-  expect(permissionTimerBarCells(16, false, "1:00")).toBe(8)
+  expect(permissionTimerBarCells(60, false, "1:00")).toBe(45)
+  expect(permissionTimerBarCells(44, false, "1:00")).toBe(29)
+  expect(permissionTimerBarCells(40, false, "1:00")).toBe(27)
+  expect(permissionTimerBarCells(44, true, "1:00")).toBe(29)
+  expect(permissionTimerBarCells(100, true, "1:00")).toBe(60)
+  expect(permissionTimerBarCells(16, false, "1:00")).toBe(3)
+  expect(permissionTimerBarCells(12, false, "1:00")).toBe(0)
 })
 
 test("fills the bar proportionally with block glyphs", () => {

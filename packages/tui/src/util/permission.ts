@@ -189,9 +189,10 @@ export function permissionTimerPhase(remaining: number, timeout: number): Permis
   return "error"
 }
 
-/** Space left for bar cells after the left border, footer padding, label and one separating space. */
+/** Space left for bar cells after route padding, the prompt border, footer padding, label and one space. */
 export function permissionTimerBarCells(width: number, expanded: boolean, label: string) {
-  return Math.max(8, Math.min(60, width - (expanded ? 10 : 6) - stringWidth(label) - 1))
+  const reserved = expanded ? 10 : width < 44 ? 8 : 10
+  return Math.max(0, Math.min(60, width - reserved - stringWidth(label) - 1))
 }
 
 export function permissionTimerBar(remaining: number, timeout: number, cells: number) {
