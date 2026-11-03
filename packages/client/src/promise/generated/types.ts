@@ -35,6 +35,8 @@ export type AgentColor = string
 
 export type PermissionEffect = "allow" | "deny" | "ask"
 
+export type PermissionTimeout = string
+
 export type PluginID = string
 
 export type PluginSource =
@@ -407,7 +409,7 @@ export type ConfigModelVariantSettings = { compaction?: ProviderCompaction; enco
   [x: string]: JsonValue | null
 }
 
-export type PermissionRule = { action: string; resource: string; effect: PermissionEffect }
+export type PermissionRule = { action: string; resource: string; effect: PermissionEffect; timeout?: PermissionTimeout }
 
 export type PluginInfo = { id?: PluginID; source: PluginSource; features: PluginFeatures; state: PluginState }
 
@@ -812,6 +814,8 @@ export type PermissionRequest = {
   metadata?: { [x: string]: JsonValue }
   source?: PermissionSource
   message?: string
+  timeout?: number
+  expires?: number
 }
 
 export type PermissionSavedInfo = {
@@ -1832,6 +1836,8 @@ export type PermissionAsked = {
     metadata?: { [x: string]: any }
     source?: PermissionSource
     message?: string
+    timeout?: number
+    expires?: number
   }
 }
 
@@ -1841,7 +1847,7 @@ export type PermissionReplied = {
   metadata?: { [x: string]: any }
   type: "permission.replied"
   location?: LocationRef
-  data: { sessionID: SessionID; requestID: PermissionID; reply: PermissionReply }
+  data: { sessionID: SessionID; requestID: PermissionID; reply: PermissionReply; reason?: "timeout" }
 }
 
 export type PluginUpdated = {
@@ -3376,7 +3382,12 @@ export type SessionCreateInput = {
   readonly location?: { readonly directory: string } | null | undefined
   readonly metadata?: { readonly [x: string]: JsonValue } | null | undefined
   readonly permissions?:
-    | ReadonlyArray<{ readonly action: string; readonly resource: string; readonly effect: "allow" | "deny" | "ask" }>
+    | ReadonlyArray<{
+        readonly action: string
+        readonly resource: string
+        readonly effect: "allow" | "deny" | "ask"
+        readonly timeout?: string
+      }>
     | null
     | undefined
 }
@@ -3410,12 +3421,18 @@ export type SessionSwitchModelOutput = void
 
 export type SessionUpdateInput = {
   readonly sessionID: string
-  readonly title?: string | undefined
-  readonly metadata?: { readonly [x: string]: JsonValue } | undefined
+  readonly title?: string | null | undefined
+  readonly metadata?: { readonly [x: string]: JsonValue } | null | undefined
   readonly permissions?:
-    | ReadonlyArray<{ readonly action: string; readonly resource: string; readonly effect: "allow" | "deny" | "ask" }>
+    | ReadonlyArray<{
+        readonly action: string
+        readonly resource: string
+        readonly effect: "allow" | "deny" | "ask"
+        readonly timeout?: string
+      }>
+    | null
     | undefined
-  readonly archived?: boolean | undefined
+  readonly archived?: boolean | null | undefined
 }
 
 export type SessionUpdateOutput = void
@@ -3875,6 +3892,7 @@ export type ExperimentalSessionImportInput = {
       readonly action: string
       readonly resource: string
       readonly effect: "allow" | "deny" | "ask"
+      readonly timeout?: string
     }>
     readonly revert?: {
       readonly messageID: string

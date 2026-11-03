@@ -1,6 +1,6 @@
 export * as Permission from "./permission.js"
 
-import { Schema } from "effect"
+import { Duration, Option, Schema } from "effect"
 import { optional } from "./schema.js"
 import { ephemeral, inventory } from "./event.js"
 import { ascending } from "./identifier.js"
@@ -31,6 +31,12 @@ const RequestFields = {
   metadata: Schema.Record(Schema.String, Schema.Unknown).pipe(optional),
   source: Source.pipe(optional),
   message: Schema.String.pipe(optional),
+  timeout: Schema.Finite.annotate({
+    description: "Total time budget for this request in milliseconds, copied from the matching rule.",
+  }).pipe(optional),
+  expires: Schema.Finite.annotate({
+    description: "Epoch milliseconds deadline for this request. Clients can render a countdown from it.",
+  }).pipe(optional),
 }
 
 export const Request = Schema.Struct({
@@ -49,6 +55,9 @@ const Replied = ephemeral({
     sessionID: SessionID,
     requestID: ID,
     reply: Reply,
+    reason: Schema.Literal("timeout")
+      .annotate({ description: 'Set to "timeout" when the request expired without a reply.' })
+      .pipe(optional),
   },
 })
 export const Event = { Asked, Replied, Definitions: inventory(Asked, Replied) }
@@ -56,11 +65,51 @@ export const Event = { Asked, Replied, Definitions: inventory(Asked, Replied) }
 export const Effect = Schema.Literals(["allow", "deny", "ask"]).annotate({ identifier: "Permission.Effect" })
 export type Effect = typeof Effect.Type
 
+const timeoutUnitMillis = {
+  ms: 1,
+  s: 1_000,
+  m: 60_000,
+  h: 3_600_000,
+  d: 86_400_000,
+} as const
+
+const compactTimeout = /^([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m|h|d)$/
+
+const timeoutString =
+  /^(?:[0-9]+(?:\.[0-9]+)?\s*(?:ms|s|m|h|d)|-?[0-9]+(?:\.[0-9]+)?\s+(?:nano|nanos|micro|micros|milli|millis|second|seconds|minute|minutes|hour|hours|day|days|week|weeks)|-?Infinity)$/
+
+const parseFullTimeout = Schema.decodeUnknownOption(Schema.DurationFromString)
+
+const parseTimeout = (value: string) => {
+  const compact = compactTimeout.exec(value)
+  if (compact) {
+    const millis = Number(compact[1]) * timeoutUnitMillis[compact[2] as keyof typeof timeoutUnitMillis]
+    return Number.isFinite(millis) ? Option.some(Duration.millis(millis)) : Option.none()
+  }
+  return parseFullTimeout(value)
+}
+
+/** Milliseconds in a timeout value, or `undefined` when it is not a finite duration. */
+export const timeoutMillis = (value: string) => {
+  const millis = Option.match(parseTimeout(value), {
+    onNone: () => undefined,
+    onSome: (duration) => Duration.toMillis(duration),
+  })
+  return Number.isFinite(millis) ? millis : undefined
+}
+
+const Timeout = Schema.String.check(Schema.isPattern(timeoutString)).annotate({
+  identifier: "Permission.Timeout",
+  description:
+    'How long an ask stays pending before it expires. Accepts Effect duration strings such as "10 minutes" or compact values such as "250ms", "3.5m", "1.5h", or "2d". Only ask rules use it.',
+})
+
 export interface Rule extends Schema.Schema.Type<typeof Rule> {}
 export const Rule = Schema.Struct({
   action: Schema.String,
   resource: Schema.String,
   effect: Effect,
+  timeout: Timeout.pipe(optional),
 }).annotate({ identifier: "Permission.Rule" })
 
 export const Ruleset = Schema.Array(Rule).annotate({ identifier: "Permission.Ruleset" })
