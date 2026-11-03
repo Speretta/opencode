@@ -30,13 +30,14 @@ The last matching rule wins, so the specific exceptions follow the broad rule.
 
 ## Rules
 
-Each rule requires three string fields:
+Each rule requires three fields:
 
 | Field      | Meaning                                                                    |
 | ---------- | -------------------------------------------------------------------------- |
 | `action`   | Tool permission action                                                     |
 | `resource` | Value being used, such as a path, command, URL, query, skill ID, or agent ID |
 | `effect`   | `allow`, `deny`, or `ask`                                                   |
+| `timeout`  | Optional limit on how long an `ask` stays pending                          |
 
 ```jsonc
 {
@@ -292,6 +293,29 @@ Review broad approvals and remove those no longer needed.
 
 Clients may attach feedback when rejecting. Non-interactive clients must decide
 how to handle approval requests; configured `deny` rules always remain enforced.
+
+## Timeouts
+
+An `ask` rule can set a `timeout` so an unanswered prompt does not block the
+session forever. Timeouts only apply to `ask`; `allow` and `deny` rules ignore
+the field.
+
+```jsonc
+{
+  "permissions": [
+    { "action": "shell", "resource": "npm publish *", "effect": "ask", "timeout": "5 minutes" },
+    { "action": "edit", "resource": "docs/*", "effect": "ask", "timeout": "90s" },
+  ],
+}
+```
+
+Use a full duration such as `10 minutes` or `1.5 hours`, or a compact value
+such as `250ms`, `1s`, `3.5m`, `1.5h`, or `2d`. When several matching rules set
+a timeout, the shortest one wins.
+
+When the timeout expires, the prompt closes as if rejected and the tool returns
+a permission error with a reason, so the model can continue without the action
+or ask again. The TUI shows a countdown bar while the prompt is pending.
 
 ## Policies
 
