@@ -114,6 +114,30 @@ function watchReplies() {
   })
 }
 
+function watchEvents() {
+  return Effect.gen(function* () {
+    const bus = yield* Bus.Service
+    const events: Array<{ type: string; requestID: Permission.ID; reply?: Permission.Reply; reason?: string }> = []
+    const unsubscribe = yield* bus.listen((event) => {
+      if (event.type === Permission.Event.Asked.type) {
+        const data = event.data as Permission.Request
+        return Effect.sync(() => {
+          events.push({ type: event.type, requestID: data.id })
+        })
+      }
+      if (event.type === Permission.Event.Replied.type) {
+        const data = event.data as { requestID: Permission.ID; reply: Permission.Reply; reason?: string }
+        return Effect.sync(() => {
+          events.push({ type: event.type, requestID: data.requestID, reply: data.reply, reason: data.reason })
+        })
+      }
+      return Effect.void
+    })
+    yield* Effect.addFinalizer(() => unsubscribe)
+    return events
+  })
+}
+
 describe("Permission", () => {
   it.effect("returns the evaluated effect and only queues prompts", () =>
     Effect.gen(function* () {
@@ -402,6 +426,188 @@ describe("Permission", () => {
     }),
   )
 
+  it.effect("publishes permission.asked before a 1ms timeout reply", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "1ms" }])
+      const events = yield* watchEvents()
+      const { fiber, request } = yield* waitForRequest()
+      expect(events).toEqual([{ type: Permission.Event.Asked.type, requestID: request.id }])
+      yield* Effect.yieldNow
+      yield* TestClock.adjust(Duration.millis(1))
+      yield* Fiber.join(fiber).pipe(Effect.flip)
+
+      expect(events.map((event) => event.type)).toEqual([
+        Permission.Event.Asked.type,
+        Permission.Event.Replied.type,
+      ])
+      expect(events[1]).toMatchObject({ requestID: request.id, reply: "reject", reason: "timeout" })
+    }),
+  )
+
+  it.effect("settles a batch rejection and a timeout exactly once", () =>
+    Effect.gen(function* () {
+      yield* setup([
+        { action: "read", resource: "fast/*", effect: "ask", timeout: "10ms" },
+        { action: "read", resource: "slow/*", effect: "ask", timeout: "1m" },
+      ])
+      const replies = yield* watchReplies()
+      const fast = yield* waitForRequest({
+        id: Permission.ID.create("per_fast"),
+        resources: ["fast/file.ts"],
+      })
+      const slow = yield* waitForRequest({
+        id: Permission.ID.create("per_slow"),
+        resources: ["slow/file.ts"],
+      })
+      yield* Effect.yieldNow
+      yield* TestClock.adjust(Duration.millis(10))
+
+      expect(yield* fast.service.list()).toEqual([slow.request])
+      expect(replies).toHaveLength(1)
+      expect(replies[0]).toMatchObject({ requestID: fast.request.id, reply: "reject", reason: "timeout" })
+
+      yield* slow.service.reply({ requestID: slow.request.id, reply: "reject" })
+      yield* Fiber.await(slow.fiber)
+      expect(replies).toHaveLength(2)
+      expect(replies.map((reply) => reply.requestID).sort()).toEqual([fast.request.id, slow.request.id].sort())
+      expect(yield* slow.service.reply({ requestID: fast.request.id, reply: "once" }).pipe(Effect.flip)).toBeInstanceOf(
+        Permission.NotFoundError,
+      )
+    }),
+  )
+
+  it.effect("close settles pending requests once and cancels their timers", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const replies = yield* watchReplies()
+      const { service, request } = yield* waitForRequest()
+      yield* service.close
+
+      expect(yield* service.list()).toEqual([])
+      expect(replies).toHaveLength(1)
+      expect(replies[0]).toMatchObject({ requestID: request.id, reply: "reject" })
+      yield* TestClock.adjust(Duration.seconds(30))
+      yield* Effect.yieldNow
+      expect(replies).toHaveLength(1)
+      expect(yield* service.reply({ requestID: request.id, reply: "once" }).pipe(Effect.flip)).toBeInstanceOf(
+        Permission.NotFoundError,
+      )
+    }),
+  )
+
+  it.effect("interruption removes the request and cancels its timer", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const replies = yield* watchReplies()
+      const { service, fiber } = yield* waitForRequest()
+      yield* Fiber.interrupt(fiber)
+
+      expect(yield* service.list()).toEqual([])
+      yield* Effect.yieldNow
+      yield* TestClock.adjust(Duration.seconds(30))
+      expect(replies).toEqual([])
+    }),
+  )
+
+  it.effect("always auto-approval cancels the timers of settled requests", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const replies = yield* watchReplies()
+      const first = yield* waitForRequest({
+        id: Permission.ID.create("per_first"),
+        save: ["src/*"],
+      })
+      const second = yield* waitForRequest({
+        id: Permission.ID.create("per_second"),
+        resources: ["src/next.ts"],
+      })
+
+      yield* first.service.reply({ requestID: first.request.id, reply: "always" })
+      yield* Fiber.join(first.fiber)
+      yield* Fiber.join(second.fiber)
+      expect(yield* second.service.list()).toEqual([])
+      expect(replies).toHaveLength(2)
+      expect(replies).toMatchObject([
+        { requestID: first.request.id, reply: "always" },
+        { requestID: second.request.id, reply: "always" },
+      ])
+
+      yield* TestClock.adjust(Duration.seconds(30))
+      yield* Effect.yieldNow
+      expect(replies).toHaveLength(2)
+    }),
+  )
+
+  it.effect("keeps batch rejection isolated to one session", () =>
+    Effect.gen(function* () {
+      const rules: Permission.Ruleset = [{ action: "read", resource: "*", effect: "ask", timeout: "30s" }]
+      yield* setup(rules)
+      yield* setup(rules, Session.ID.make("ses_other"))
+      const replies = yield* watchReplies()
+      const first = yield* waitForRequest()
+      const other = yield* waitForRequest({
+        id: Permission.ID.create("per_other"),
+        sessionID: Session.ID.make("ses_other"),
+      })
+
+      yield* first.service.reply({ requestID: first.request.id, reply: "reject" })
+      expect(yield* first.service.list()).toEqual([other.request])
+      expect(replies).toHaveLength(1)
+      yield* other.service.reply({ requestID: other.request.id, reply: "once" })
+      yield* Fiber.join(other.fiber)
+      expect(yield* other.service.list()).toEqual([])
+    }),
+  )
+
+  it.effect("expires one of two requests and leaves the other pending", () =>
+    Effect.gen(function* () {
+      yield* setup([
+        { action: "read", resource: "fast/*", effect: "ask", timeout: "10ms" },
+        { action: "read", resource: "slow/*", effect: "ask", timeout: "30s" },
+      ])
+      const replies = yield* watchReplies()
+      const fast = yield* waitForRequest({
+        id: Permission.ID.create("per_fast"),
+        resources: ["fast/file.ts"],
+      })
+      const slow = yield* waitForRequest({
+        id: Permission.ID.create("per_slow"),
+        resources: ["slow/file.ts"],
+      })
+      yield* Effect.yieldNow
+      yield* TestClock.adjust(Duration.millis(10))
+      expect(yield* slow.service.list()).toEqual([slow.request])
+      expect(replies).toHaveLength(1)
+      expect(replies[0]).toMatchObject({ requestID: fast.request.id, reason: "timeout" })
+
+      yield* TestClock.adjust(Duration.seconds(30))
+      yield* Fiber.await(slow.fiber)
+      expect(yield* slow.service.list()).toEqual([])
+      expect(replies).toHaveLength(2)
+      expect(replies[1]).toMatchObject({ requestID: slow.request.id, reason: "timeout" })
+    }),
+  )
+
+  it.effect("keeps the timer alive after the creating request scope closes", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "10ms" }])
+      const replies = yield* watchReplies()
+      const service = yield* Permission.Service
+      const result = yield* Effect.scoped(
+        Effect.gen(function* () {
+          return yield* service.ask(assertion())
+        }),
+      )
+      expect(result.effect).toBe("ask")
+      yield* Effect.yieldNow
+      yield* TestClock.adjust(Duration.millis(10))
+
+      expect(yield* service.list()).toEqual([])
+      expect(replies).toHaveLength(1)
+      expect(replies[0]).toMatchObject({ requestID: result.id, reply: "reject", reason: "timeout" })
+    }),
+  )
+
   it.effect("ignores a timeout on rules that deny", () =>
     Effect.gen(function* () {
       yield* setup([
@@ -414,7 +620,53 @@ describe("Permission", () => {
     }),
   )
 
-  it.effect("uses the shortest timeout across matching resources", () =>
+  it.effect("ignores a timeout on rules that allow", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "allow", timeout: "1ms" }])
+      const service = yield* Permission.Service
+      expect(yield* service.ask(assertion())).toMatchObject({ effect: "allow" })
+      expect(yield* service.list()).toEqual([])
+      yield* TestClock.adjust(Duration.millis(1))
+      expect(yield* service.list()).toEqual([])
+    }),
+  )
+
+  for (const scenario of [
+    {
+      name: "uses a specific timeout that follows a broad rule",
+      rules: [
+        { action: "shell", resource: "*", effect: "ask", timeout: "10m" },
+        { action: "shell", resource: "git push *", effect: "ask", timeout: "30s" },
+      ] satisfies Permission.Ruleset,
+      expected: 30_000,
+    },
+    {
+      name: "uses the last matching timeout even when it is longer",
+      rules: [
+        { action: "shell", resource: "*", effect: "ask", timeout: "30s" },
+        { action: "shell", resource: "git push *", effect: "ask", timeout: "60s" },
+      ] satisfies Permission.Ruleset,
+      expected: 60_000,
+    },
+    {
+      name: "lets a later broad rule override an earlier specific timeout",
+      rules: [
+        { action: "shell", resource: "git push *", effect: "ask", timeout: "60s" },
+        { action: "shell", resource: "git *", effect: "ask", timeout: "10s" },
+      ] satisfies Permission.Ruleset,
+      expected: 10_000,
+    },
+  ]) {
+    it.effect(scenario.name, () =>
+      Effect.gen(function* () {
+        yield* setup(scenario.rules)
+        const { request } = yield* waitForRequest({ action: "shell", resources: ["git push --force"] })
+        expect(request.timeout).toBe(scenario.expected)
+      }),
+    )
+  }
+
+  it.effect("uses the shortest timeout among the winning ask rules across resources", () =>
     Effect.gen(function* () {
       yield* setup([
         { action: "read", resource: "src/*", effect: "ask", timeout: "5m" },
@@ -424,6 +676,42 @@ describe("Permission", () => {
       expect(request.timeout).toBe(10_000)
     }),
   )
+
+  it.effect("keeps a defined winner when another resource asks without a timeout", () =>
+    Effect.gen(function* () {
+      yield* setup([
+        { action: "read", resource: "src/*", effect: "ask", timeout: "10s" },
+        { action: "read", resource: "docs/*", effect: "ask" },
+      ])
+      const { request } = yield* waitForRequest({ resources: ["src/index.ts", "docs/intro.md"] })
+      expect(request.timeout).toBe(10_000)
+    }),
+  )
+
+  it.effect("leaves the timeout undefined when no winning ask rule defines one", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask" }])
+      const { request } = yield* waitForRequest()
+      expect(request.timeout).toBeUndefined()
+      expect(request.expires).toBeUndefined()
+    }),
+  )
+
+  for (const timeout of ["0s", "-2 seconds", "Infinity"]) {
+    it.effect(`ignores the invalid timeout ${timeout}`, () =>
+      Effect.gen(function* () {
+        yield* setup([{ action: "read", resource: "*", effect: "ask", timeout }])
+        const { service, fiber, request } = yield* waitForRequest()
+        expect(request.timeout).toBeUndefined()
+        expect(request.expires).toBeUndefined()
+        yield* Effect.yieldNow
+        yield* TestClock.adjust(Duration.seconds(1))
+        expect(yield* service.list()).toEqual([request])
+        yield* service.reply({ requestID: request.id, reply: "once" })
+        yield* Fiber.join(fiber)
+      }),
+    )
+  }
 
   it.effect("drops undefined metadata values so pending requests encode as JSON", () =>
     Effect.gen(function* () {

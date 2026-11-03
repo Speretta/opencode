@@ -147,7 +147,9 @@ const layer = Layer.effect(
 
     const close = Effect.gen(function* () {
       closed = true
-      yield* Effect.forEach(Array.from(pending.values()), (item) =>
+      const items = Array.from(pending.values())
+      pending.clear()
+      yield* Effect.forEach(items, (item) =>
         cancelTimer(item).pipe(
           Effect.andThen(
             bus.publish(Permission.Event.Replied, {
@@ -159,7 +161,6 @@ const layer = Layer.effect(
           Effect.ensuring(Deferred.fail(item.deferred, new DeclinedError())),
         ),
       )
-      pending.clear()
     }).pipe(Effect.uninterruptible)
     yield* Effect.addFinalizer(() => close)
 
@@ -273,15 +274,21 @@ const layer = Layer.effect(
           if (pending.has(value.id))
             return yield* Effect.die(new Error(`Duplicate pending permission ID: ${value.id}`))
           pending.set(value.id, item)
-          if (value.timeout !== undefined) {
-            item.timer = yield* Effect.sleep(Duration.millis(value.timeout)).pipe(
-              Effect.andThen(expire(value.id)),
-              Effect.forkIn(scope, { startImmediately: true, uninterruptible: false }),
-            )
-          }
-          yield* bus.publish(Permission.Event.Asked, value).pipe(
-            Effect.onError(() => cancelTimer(item).pipe(Effect.andThen(Effect.sync(() => pending.delete(value.id))))),
+          yield* bus
+            .publish(Permission.Event.Asked, value)
+            .pipe(Effect.onError(() => Effect.sync(() => pending.delete(value.id))))
+          if (value.timeout === undefined || !pending.has(value.id)) return item
+          const remaining = Math.max(
+            0,
+            (value.expires ?? value.timeout) - (yield* Clock.currentTimeMillis),
           )
+          item.timer = yield* Effect.sleep(Duration.millis(remaining)).pipe(
+            Effect.andThen(expire(value.id)),
+            Effect.forkIn(scope, { startImmediately: true, uninterruptible: false }),
+          )
+          if (pending.has(value.id)) return item
+          yield* cancelTimer(item)
+          item.timer = undefined
           return item
         }),
       )
@@ -318,7 +325,10 @@ const layer = Layer.effect(
               // it into ToolFailure and the model continues.
               Effect.catchTag("Permission.DeclinedError", (error) => Effect.die(error)),
               Effect.ensuring(
-                cancelTimer(item).pipe(Effect.andThen(Effect.sync(() => pending.delete(item.request.id)))),
+                Effect.suspend(() => {
+                  if (!pending.delete(item.request.id)) return Effect.void
+                  return cancelTimer(item)
+                }),
               ),
             )
           }),
@@ -347,6 +357,16 @@ const layer = Layer.effect(
         Effect.gen(function* () {
           const existing = pending.get(input.requestID)
           if (!existing) return yield* new NotFoundError({ requestID: input.requestID })
+          pending.delete(input.requestID)
+          // Reject settles the whole session batch, so claim every member before the first yield.
+          const batch =
+            input.reply === "reject"
+              ? Array.from(pending.entries()).filter(
+                  ([, item]) => item.request.sessionID === existing.request.sessionID,
+                )
+              : []
+          for (const [id] of batch) pending.delete(id)
+
           yield* cancelTimer(existing)
           yield* bus.publish(Permission.Event.Replied, {
             sessionID: existing.request.sessionID,
@@ -359,9 +379,7 @@ const layer = Layer.effect(
               existing.deferred,
               input.message ? new CorrectedError({ feedback: input.message }) : new DeclinedError(),
             )
-            pending.delete(input.requestID)
-            for (const [id, item] of pending) {
-              if (item.request.sessionID !== existing.request.sessionID) continue
+            for (const [, item] of batch) {
               yield* cancelTimer(item)
               yield* bus.publish(Permission.Event.Replied, {
                 sessionID: item.request.sessionID,
@@ -373,7 +391,6 @@ const layer = Layer.effect(
                 item.deferred,
                 input.message ? new CorrectedError({ feedback: input.message }) : new DeclinedError(),
               )
-              pending.delete(id)
             }
             return
           }
@@ -386,7 +403,6 @@ const layer = Layer.effect(
             })
           }
           yield* Deferred.succeed(existing.deferred, undefined)
-          pending.delete(input.requestID)
           if (input.reply !== "always" || !existing.request.save?.length) return
 
           for (const [id, item] of pending) {
@@ -394,6 +410,7 @@ const layer = Layer.effect(
               Effect.catchTag("Session.NotFoundError", () => Effect.undefined),
             )
             if (result?.effect !== "allow") continue
+            if (!pending.delete(id)) continue
             yield* cancelTimer(item)
             yield* bus.publish(Permission.Event.Replied, {
               sessionID: item.request.sessionID,
@@ -401,7 +418,6 @@ const layer = Layer.effect(
               reply: "always",
             })
             yield* Deferred.succeed(item.deferred, undefined)
-            pending.delete(id)
           }
         }),
       ),
