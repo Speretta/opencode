@@ -30,7 +30,7 @@ The last matching rule wins, so the specific exceptions follow the broad rule.
 
 ## Rules
 
-Each rule requires three fields:
+Each rule has three required fields:
 
 | Field      | Meaning                                                                    |
 | ---------- | -------------------------------------------------------------------------- |
@@ -310,12 +310,31 @@ the field.
 ```
 
 Use a full duration such as `10 minutes` or `1.5 hours`, or a compact value
-such as `250ms`, `1s`, `3.5m`, `1.5h`, or `2d`. When several matching rules set
-a timeout, the shortest one wins.
+such as `250ms`, `1s`, `3.5m`, `1.5h`, or `2d`. Spaces inside a compact value
+are optional. Timeouts must be positive; `0s`, negative values, and non-finite
+values are invalid.
+
+The last matching rule supplies the timeout, just as it supplies the effect. Put
+a specific rule after a broad one so it can override the timeout:
+
+```jsonc
+{
+  "permissions": [
+    { "action": "shell", "resource": "*", "effect": "ask", "timeout": "10m" },
+    { "action": "shell", "resource": "git push *", "effect": "ask", "timeout": "30s" },
+  ],
+}
+```
+
+If a request checks several resources, each ask resource uses its own winning
+rule. The shortest timeout among those winning ask rules applies; if none of
+them sets a timeout, the request waits indefinitely.
 
 When the timeout expires, the prompt closes as if rejected and the tool returns
 a permission error with a reason, so the model can continue without the action
-or ask again. The TUI shows a countdown bar while the prompt is pending.
+or ask again. The TUI shows a countdown bar while the prompt is pending,
+including while entering rejection feedback; feedback typed after the request
+expires is discarded.
 
 ## Policies
 
