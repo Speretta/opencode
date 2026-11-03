@@ -20943,6 +20943,14 @@
           },
           "message": {
             "type": "string"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Total time budget for this request in milliseconds, copied from the matching rule."
+          },
+          "expires": {
+            "type": "number",
+            "description": "Epoch milliseconds deadline for this request. Clients can render a countdown from it."
           }
         },
         "required": ["id", "sessionID", "action", "resources"],
@@ -20959,6 +20967,9 @@
           },
           "effect": {
             "$ref": "#/components/schemas/Permission.Effect"
+          },
+          "timeout": {
+            "$ref": "#/components/schemas/Permission.Timeout"
           }
         },
         "required": ["action", "resource", "effect"],
@@ -20990,6 +21001,10 @@
             "additionalProperties": false
           }
         ]
+      },
+      "Permission.Timeout": {
+        "type": "string",
+        "description": "How long an ask stays pending before it expires. Accepts Effect duration strings such as \"10 minutes\" or compact values such as \"250ms\", \"3.5m\", \"1.5h\", or \"2d\". Only ask rules use it."
       },
       "PermissionNotFoundErrorEncoded": {
         "type": "object",
@@ -26853,6 +26868,14 @@
               },
               "message": {
                 "type": "string"
+              },
+              "timeout": {
+                "type": "number",
+                "description": "Total time budget for this request in milliseconds, copied from the matching rule."
+              },
+              "expires": {
+                "type": "number",
+                "description": "Epoch milliseconds deadline for this request. Clients can render a countdown from it."
               }
             },
             "required": ["id", "sessionID", "action", "resources"],
@@ -26892,6 +26915,11 @@
               },
               "reply": {
                 "$ref": "#/components/schemas/Permission.Reply"
+              },
+              "reason": {
+                "type": "string",
+                "enum": ["timeout"],
+                "description": "Set to \"timeout\" when the request expired without a reply."
               }
             },
             "required": ["sessionID", "requestID", "reply"],
