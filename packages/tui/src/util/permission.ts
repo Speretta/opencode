@@ -1,4 +1,5 @@
 import { Locale } from "./locale"
+import { stringWidth } from "./string-width"
 import { canonicalToolName, finiteNumber, webSearchProviderLabel } from "./tool-display"
 
 type Dict = Record<string, unknown>
@@ -165,6 +166,39 @@ export function permissionOptionLabel(option: "once" | "always" | "reject" | "co
   if (option === "reject") return "Reject"
   if (option === "confirm") return "Confirm"
   return "Cancel"
+}
+
+export type PermissionTimerPhase = "info" | "warning" | "error"
+
+export function permissionTimerRemaining(expires: number, timeout: number, now: number) {
+  return Math.max(0, Math.min(timeout, expires - now))
+}
+
+/** Fixed-width `m:ss` from one minute up, otherwise whole seconds, always rounding up. */
+export function permissionTimerLabel(remaining: number) {
+  const seconds = Math.ceil(Math.max(0, remaining) / 1000)
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
+}
+
+export function permissionTimerPhase(remaining: number, timeout: number): PermissionTimerPhase {
+  if (timeout <= 0) return "error"
+  const ratio = Math.max(0, Math.min(1, remaining / timeout))
+  if (ratio > 0.5) return "info"
+  if (ratio > 0.2) return "warning"
+  return "error"
+}
+
+/** Space left for bar cells after the left border, footer padding, label and one separating space. */
+export function permissionTimerBarCells(width: number, expanded: boolean, label: string) {
+  return Math.max(8, Math.min(60, width - (expanded ? 10 : 6) - stringWidth(label) - 1))
+}
+
+export function permissionTimerBar(remaining: number, timeout: number, cells: number) {
+  const size = Math.max(0, Math.floor(cells))
+  const ratio = timeout <= 0 ? 0 : Math.max(0, Math.min(1, remaining / timeout))
+  const filled = Math.ceil(ratio * size)
+  return { filled: "█".repeat(filled), empty: "░".repeat(size - filled) }
 }
 
 function normalizeInput(action: string, value: unknown): Dict {

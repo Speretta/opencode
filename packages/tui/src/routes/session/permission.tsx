@@ -1,5 +1,5 @@
 import { createStore } from "solid-js/store"
-import { createMemo, For, Match, Show, Switch } from "solid-js"
+import { createMemo, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
 import { Portal, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useTheme, useThemes } from "../../context/theme"
@@ -7,7 +7,16 @@ import type { PermissionReply, PermissionRequest } from "@opencode/client"
 import { SplitBorder } from "../../ui/border"
 import { useData } from "../../context/data"
 import { filetype } from "../../util/filetype"
-import { permissionAlwaysLines, permissionOptionLabel, permissionPresentation } from "../../util/permission"
+import {
+  permissionAlwaysLines,
+  permissionOptionLabel,
+  permissionPresentation,
+  permissionTimerBar,
+  permissionTimerBarCells,
+  permissionTimerLabel,
+  permissionTimerPhase,
+  permissionTimerRemaining,
+} from "../../util/permission"
 import { getScrollAcceleration } from "../../util/scroll"
 import { useConfig, useCursorStyle } from "../../config"
 import { Keymap } from "../../context/keymap"
@@ -240,6 +249,11 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
               }
               escapeKey="reject"
               fullscreen
+              timer={
+                props.request.timeout !== undefined && props.request.expires !== undefined
+                  ? { timeout: props.request.timeout, expires: props.request.expires }
+                  : undefined
+              }
               onSelect={(option) => {
                 if (option === "always") {
                   reply("always")
@@ -404,6 +418,47 @@ function RejectPrompt(props: {
   )
 }
 
+function PermissionTimer(props: {
+  timer: { timeout: number; expires: number }
+  expanded: boolean
+}) {
+  const theme = useTheme()
+  const dimensions = useTerminalDimensions()
+  const [now, setNow] = createSignal(Date.now())
+  const interval = setInterval(() => setNow(Date.now()), 250)
+  onCleanup(() => clearInterval(interval))
+
+  const remaining = createMemo(() => permissionTimerRemaining(props.timer.expires, props.timer.timeout, now()))
+  const label = createMemo(() => permissionTimerLabel(remaining()))
+  const phase = createMemo(() => permissionTimerPhase(remaining(), props.timer.timeout))
+  const cells = createMemo(() => permissionTimerBarCells(dimensions().width, props.expanded, label()))
+  const bar = createMemo(() => permissionTimerBar(remaining(), props.timer.timeout, cells()))
+  const fill = createMemo(() =>
+    phase() === "info"
+      ? theme.background.feedback.info.base
+      : phase() === "warning"
+        ? theme.background.feedback.warning.base
+        : theme.background.feedback.error.base,
+  )
+  const text = createMemo(() =>
+    phase() === "info"
+      ? theme.text.feedback.info.base
+      : phase() === "warning"
+        ? theme.text.feedback.warning.base
+        : theme.text.feedback.error.base,
+  )
+
+  return (
+    <box flexDirection="row" flexShrink={0}>
+      <text>
+        <span style={{ fg: fill() }}>{bar().filled}</span>
+        <span style={{ fg: theme.text.faint }}>{bar().empty}</span>
+      </text>
+      <text fg={text()}> {label()}</text>
+    </box>
+  )
+}
+
 export function SessionQuestion<const T extends Record<string, string>>(props: {
   title: string
   semanticLabel?: string
@@ -416,6 +471,7 @@ export function SessionQuestion<const T extends Record<string, string>>(props: {
   options: T
   escapeKey?: keyof T
   fullscreen?: boolean
+  timer?: { timeout: number; expires: number }
   onSelect: (option: keyof T) => void
 }) {
   const theme = useTheme()
@@ -539,7 +595,7 @@ export function SessionQuestion<const T extends Record<string, string>>(props: {
         {typeof props.body === "function" ? props.body(store.selected) : props.body}
       </box>
       <box
-        flexDirection={narrow() ? "column" : "row"}
+        flexDirection="column"
         flexShrink={0}
         gap={1}
         paddingTop={1}
@@ -547,68 +603,76 @@ export function SessionQuestion<const T extends Record<string, string>>(props: {
         paddingRight={3}
         paddingBottom={1}
         backgroundColor={theme.decrease(theme.background.raised.base)}
-        justifyContent={narrow() ? "flex-start" : "space-between"}
-        alignItems={narrow() ? "flex-start" : "center"}
       >
+        <Show when={props.timer}>
+          {(timer) => <PermissionTimer timer={timer()} expanded={store.expanded} />}
+        </Show>
         <box
-          id={`${id()}.actions`}
-          ref={SimulationSemantics.bind(() => ({
-            instance: props.instance,
-            role: "listbox",
-            label: props.choicesLabel ?? "Permission choices",
-          }))}
-          flexDirection="row"
+          flexDirection={narrow() ? "column" : "row"}
           gap={1}
-          flexShrink={0}
+          justifyContent={narrow() ? "flex-start" : "space-between"}
+          alignItems={narrow() ? "flex-start" : "center"}
         >
-          <For each={keys}>
-            {(option) => (
-              <box
-                id={`${id()}.action.${String(option)}`}
-                ref={SimulationSemantics.bind(() => ({
-                  instance: props.instance,
-                  role: "option",
-                  label: props.options[option],
-                  focused: option === store.selected,
-                  selected: option === store.selected,
-                  disabled: false,
-                }))}
-                paddingLeft={1}
-                paddingRight={1}
-                backgroundColor={
-                  option === store.selected
-                    ? theme.background.action.primary.focused
-                    : theme.background.action.primary.base
-                }
-                onMouseMove={() => setStore("selected", option)}
-                onMouseUp={() => {
-                  setStore("selected", option)
-                  props.onSelect(option)
-                }}
-              >
-                <text
-                  fg={option === store.selected ? theme.text.action.primary.focused : theme.text.action.primary.base}
+          <box
+            id={`${id()}.actions`}
+            ref={SimulationSemantics.bind(() => ({
+              instance: props.instance,
+              role: "listbox",
+              label: props.choicesLabel ?? "Permission choices",
+            }))}
+            flexDirection="row"
+            gap={1}
+            flexShrink={0}
+          >
+            <For each={keys}>
+              {(option) => (
+                <box
+                  id={`${id()}.action.${String(option)}`}
+                  ref={SimulationSemantics.bind(() => ({
+                    instance: props.instance,
+                    role: "option",
+                    label: props.options[option],
+                    focused: option === store.selected,
+                    selected: option === store.selected,
+                    disabled: false,
+                  }))}
+                  paddingLeft={1}
+                  paddingRight={1}
+                  backgroundColor={
+                    option === store.selected
+                      ? theme.background.action.primary.focused
+                      : theme.background.action.primary.base
+                  }
+                  onMouseMove={() => setStore("selected", option)}
+                  onMouseUp={() => {
+                    setStore("selected", option)
+                    props.onSelect(option)
+                  }}
                 >
-                  {props.options[option]}
-                </text>
-              </box>
-            )}
-          </For>
-        </box>
-        <box flexDirection="row" gap={2} flexShrink={0}>
-          <Show when={props.fullscreen}>
+                  <text
+                    fg={option === store.selected ? theme.text.action.primary.focused : theme.text.action.primary.base}
+                  >
+                    {props.options[option]}
+                  </text>
+                </box>
+              )}
+            </For>
+          </box>
+          <box flexDirection="row" gap={2} flexShrink={0}>
+            <Show when={props.fullscreen}>
+              <text fg={theme.text.base}>
+                {shortcuts.get("permission.prompt.fullscreen")} <span style={{ fg: theme.text.muted }}>{hint()}</span>
+              </text>
+            </Show>
+            <Show when={keys.length > 1}>
+              <text fg={theme.text.base}>
+                {"⇆"} <span style={{ fg: theme.text.muted }}>select</span>
+              </text>
+            </Show>
             <text fg={theme.text.base}>
-              {shortcuts.get("permission.prompt.fullscreen")} <span style={{ fg: theme.text.muted }}>{hint()}</span>
+              enter <span style={{ fg: theme.text.muted }}>confirm</span>
             </text>
-          </Show>
-          <Show when={keys.length > 1}>
-            <text fg={theme.text.base}>
-              {"⇆"} <span style={{ fg: theme.text.muted }}>select</span>
-            </text>
-          </Show>
-          <text fg={theme.text.base}>
-            enter <span style={{ fg: theme.text.muted }}>confirm</span>
-          </text>
+          </box>
         </box>
       </box>
     </box>
