@@ -309,10 +309,12 @@ the field.
 }
 ```
 
-Use a full duration such as `10 minutes` or `1.5 hours`, or a compact value
-such as `250ms`, `1s`, `3.5m`, `1.5h`, or `2d`. Spaces inside a compact value
-are optional. Timeouts must be positive; `0s`, negative values, and non-finite
-values are invalid.
+Use a full duration such as `10 minutes`, `1.5 hours`, or `1 week`, or a
+compact value such as `250ms`, `1s`, `3.5m`, `1.5h`, or `2d`. Spaces inside a
+compact value are optional. Timeouts must be positive; zero, negative, and
+non-finite values are invalid. Sub-millisecond durations such as `1 nano` are
+valid, but timers run at millisecond resolution, so they expire immediately;
+prefer `1ms` or more.
 
 The last matching rule supplies the timeout, just as it supplies the effect. Put
 a specific rule after a broad one so it can override the timeout:
