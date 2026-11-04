@@ -31,8 +31,37 @@ describe("permission timeouts", () => {
     expect(Permission.timeoutMillis(rule.timeout!)).toBe(500)
   })
 
-  test("rejects non-positive and non-finite durations", () => {
-    for (const timeout of ["0s", "0 seconds", "0.0m", "-1s", "-2 seconds", "Infinity", "-Infinity"]) {
+  test("accepts optional whitespace, week units, and sub-millisecond durations", () => {
+    for (const [timeout, millis] of [
+      ["250 ms", 250],
+      ["1 s", 1_000],
+      ["0.5s", 500],
+      ["1 week", 604_800_000],
+      ["0.5ms", 0.5],
+      ["1 nano", 0.000001],
+    ] as const) {
+      const rule = decodeRule({ action: "shell", resource: "*", effect: "ask", timeout })
+      expect(Permission.timeoutMillis(rule.timeout!)).toBe(millis)
+    }
+  })
+
+  test("rejects non-positive and malformed durations", () => {
+    for (const timeout of [
+      "",
+      "   ",
+      "NaN",
+      " 1s",
+      "1s ",
+      "1w",
+      "1ns",
+      "0s",
+      "0 seconds",
+      "0.0m",
+      "-1s",
+      "-2 seconds",
+      "Infinity",
+      "-Infinity",
+    ]) {
       expect(() => decodeRule({ action: "shell", resource: "*", effect: "ask", timeout })).toThrow()
       expect(Permission.timeoutMillis(timeout)).toBeUndefined()
     }

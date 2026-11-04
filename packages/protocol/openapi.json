@@ -20969,7 +20969,8 @@
             "$ref": "#/components/schemas/Permission.Effect"
           },
           "timeout": {
-            "$ref": "#/components/schemas/Permission.Timeout"
+            "type": "string",
+            "description": "How long an ask stays pending before it expires. Accepts duration strings such as \"10 minutes\", or compact values such as \"250ms\", \"3.5m\", \"1.5h\", or \"2d\". Only ask rules use it."
           }
         },
         "required": ["action", "resource", "effect"],
@@ -21001,10 +21002,6 @@
             "additionalProperties": false
           }
         ]
-      },
-      "Permission.Timeout": {
-        "type": "string",
-        "description": "How long an ask stays pending before it expires. Accepts Effect duration strings such as \"10 minutes\" or compact values such as \"250ms\", \"3.5m\", \"1.5h\", or \"2d\". Only ask rules use it."
       },
       "PermissionNotFoundErrorEncoded": {
         "type": "object",

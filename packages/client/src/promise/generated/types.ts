@@ -35,8 +35,6 @@ export type AgentColor = string
 
 export type PermissionEffect = "allow" | "deny" | "ask"
 
-export type PermissionTimeout = string
-
 export type PluginID = string
 
 export type PluginSource =
@@ -409,7 +407,7 @@ export type ConfigModelVariantSettings = { compaction?: ProviderCompaction; enco
   [x: string]: JsonValue | null
 }
 
-export type PermissionRule = { action: string; resource: string; effect: PermissionEffect; timeout?: PermissionTimeout }
+export type PermissionRule = { action: string; resource: string; effect: PermissionEffect; timeout?: string }
 
 export type PluginInfo = { id?: PluginID; source: PluginSource; features: PluginFeatures; state: PluginState }
 

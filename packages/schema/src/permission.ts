@@ -92,7 +92,7 @@ const parseTimeout = (value: string) => {
   return parseFullTimeout(value)
 }
 
-/** Milliseconds in a positive finite timeout value, or `undefined` when it is invalid. */
+/** Milliseconds in a positive finite timeout, or `undefined` when it is invalid. */
 export const timeoutMillis = (value: string) => {
   const millis = Option.match(parseTimeout(value), {
     onNone: () => undefined,
@@ -101,18 +101,17 @@ export const timeoutMillis = (value: string) => {
   return millis !== undefined && Number.isFinite(millis) && millis > 0 ? millis : undefined
 }
 
-const Timeout = Schema.String.check(Schema.isPattern(timeoutString)).annotate({
-  identifier: "Permission.Timeout",
-  description:
-    'How long an ask stays pending before it expires. Accepts Effect duration strings such as "10 minutes" or compact values such as "250ms", "3.5m", "1.5h", or "2d". Only ask rules use it.',
-})
-
 export interface Rule extends Schema.Schema.Type<typeof Rule> {}
 export const Rule = Schema.Struct({
   action: Schema.String,
   resource: Schema.String,
   effect: Effect,
-  timeout: Timeout.pipe(optional),
+  timeout: Schema.String.check(Schema.isPattern(timeoutString))
+    .annotate({
+      description:
+        'How long an ask stays pending before it expires. Accepts duration strings such as "10 minutes", or compact values such as "250ms", "3.5m", "1.5h", or "2d". Only ask rules use it.',
+    })
+    .pipe(optional),
 }).annotate({ identifier: "Permission.Rule" })
 
 export const Ruleset = Schema.Array(Rule).annotate({ identifier: "Permission.Ruleset" })
