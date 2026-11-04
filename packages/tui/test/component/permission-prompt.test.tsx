@@ -197,7 +197,11 @@ test("keeps the countdown visible while entering rejection feedback", async () =
   await using mounted = await mount(44)
   mounted.app.renderer.start()
   await mounted.data.session.sync("ses_test")
-  while (!mounted.data.session.get("ses_test")?.parentID) await Bun.sleep(1)
+  const started = Date.now()
+  while (!mounted.data.session.get("ses_test")?.parentID) {
+    if (Date.now() - started > 2_000) throw new Error("Timed out waiting for the session")
+    await Bun.sleep(1)
+  }
   await mounted.app.waitForFrame((frame) => frame.includes("5:00"))
   mounted.app.mockInput.pressArrow("right")
   await Promise.resolve()
