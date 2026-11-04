@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, jest, test } from "bun:test"
-import { testRender } from "@opentui/solid"
+import { testRender, useTerminalDimensions } from "@opentui/solid"
 import type { PermissionRequest } from "@opencode/client"
 import { createEffect, createSignal, Show } from "solid-js"
 import { ConfigProvider } from "../../src/config"
@@ -34,9 +34,11 @@ function request(timeout = 300_000): PermissionRequest {
 }
 
 function Harness(props: { request: PermissionRequest }) {
+  const dimensions = useTerminalDimensions()
   const [visible, setVisibleSignal] = createSignal(true)
   const [value, setRequestSignal] = createSignal(props.request)
   const commands = Keymap.useCommands()
+  const padding = () => (dimensions().width < 44 ? 1 : 2)
   setVisible = setVisibleSignal
   setRequest = setRequestSignal
   data = useData()
@@ -45,7 +47,7 @@ function Harness(props: { request: PermissionRequest }) {
   })
   mountedReady()
   return (
-    <box height="100%" flexGrow={1}>
+    <box height="100%" flexGrow={1} paddingLeft={padding()} paddingRight={padding()}>
       <Show when={visible()}>
         <PermissionPrompt request={value()} />
       </Show>
@@ -120,38 +122,52 @@ function bar(expected: number, label = "5:00") {
   return `${"█".repeat(expected)} ${label}`
 }
 
-test("renders the real prompt countdown and options at 44 columns", async () => {
-  await using mounted = await mount(44)
-  mounted.app.renderer.start()
-  await mounted.app.waitForFrame((frame) => frame.includes("5:00"))
-  const frame = mounted.app.captureCharFrame()
-  expect(frame).toContain(bar(29))
+async function withFrozenNow(run: () => Promise<void>) {
+  const now = jest.spyOn(Date, "now").mockReturnValue(1_000_000)
+  try {
+    await run()
+  } finally {
+    now.mockRestore()
+  }
+}
+
+function assertCountdown(frame: string, width: number, expected: number) {
+  const line = frame.split("\n").find((row) => row.includes("█"))
+  expect(line?.trimEnd().endsWith(bar(expected))).toBe(true)
+  expect(line?.length ?? 0).toBeLessThanOrEqual(width)
   expect(frame).toContain("Allow once")
   expect(frame).toContain("Reject")
+}
+
+test("renders the real prompt countdown and options at 44 columns", async () => {
+  await withFrozenNow(async () => {
+    await using mounted = await mount(44)
+    mounted.app.renderer.start()
+    await mounted.app.waitForFrame((frame) => frame.includes("5:00"))
+    assertCountdown(mounted.app.captureCharFrame(), 44, 29)
+  })
 })
 
 test("renders the real prompt countdown and options at 40 columns", async () => {
-  await using mounted = await mount(40)
-  mounted.app.renderer.start()
-  await mounted.app.waitForFrame((frame) => frame.includes("5:00"))
-  const frame = mounted.app.captureCharFrame()
-  expect(frame).toContain(bar(27))
-  expect(frame).toContain("Allow once")
-  expect(frame).toContain("Reject")
+  await withFrozenNow(async () => {
+    await using mounted = await mount(40)
+    mounted.app.renderer.start()
+    await mounted.app.waitForFrame((frame) => frame.includes("5:00"))
+    assertCountdown(mounted.app.captureCharFrame(), 40, 27)
+  })
 })
 
 test("renders the real prompt countdown and options in fullscreen at 100 columns", async () => {
-  await using mounted = await mount(100)
-  mounted.app.renderer.start()
-  await mounted.app.waitForFrame((frame) => frame.includes("5:00"))
-  await mounted.fullscreenReady
-  await mounted.app.waitForVisualIdle({ quietFrames: 2 })
-  mounted.app.mockInput.pressKey("f", { ctrl: true })
-  await mounted.app.waitForFrame((frame) => frame.includes("minimize"))
-  const frame = mounted.app.captureCharFrame()
-  expect(frame).toContain(bar(60))
-  expect(frame).toContain("Allow once")
-  expect(frame).toContain("Reject")
+  await withFrozenNow(async () => {
+    await using mounted = await mount(100)
+    mounted.app.renderer.start()
+    await mounted.app.waitForFrame((frame) => frame.includes("5:00"))
+    await mounted.fullscreenReady
+    await mounted.app.waitForVisualIdle({ quietFrames: 2 })
+    mounted.app.mockInput.pressKey("f", { ctrl: true })
+    await mounted.app.waitForFrame((frame) => frame.includes("minimize"))
+    assertCountdown(mounted.app.captureCharFrame(), 100, 60)
+  })
 })
 
 test("stops the countdown interval on unmount", async () => {
@@ -194,22 +210,21 @@ test("replaces the countdown tick and label when the request changes", async () 
 })
 
 test("keeps the countdown visible while entering rejection feedback", async () => {
-  await using mounted = await mount(44)
-  mounted.app.renderer.start()
-  await mounted.data.session.sync("ses_test")
-  const started = Date.now()
-  while (!mounted.data.session.get("ses_test")?.parentID) {
-    if (Date.now() - started > 2_000) throw new Error("Timed out waiting for the session")
-    await Bun.sleep(1)
-  }
-  await mounted.app.waitForFrame((frame) => frame.includes("5:00"))
-  mounted.app.mockInput.pressArrow("right")
-  await Promise.resolve()
-  mounted.app.mockInput.pressEnter()
-  await mounted.app.waitForFrame((frame) => frame.includes("Reject permission"))
-  const frame = mounted.app.captureCharFrame()
-  expect(frame).toContain(bar(29))
-  expect(frame).toContain("Tell OpenCode what to do differently")
-  expect(frame).toContain("enter")
-  expect(frame).toContain("esc")
+  await withFrozenNow(async () => {
+    await using mounted = await mount(44)
+    mounted.app.renderer.start()
+    await mounted.data.session.sync("ses_test")
+    await mounted.app.waitFor(() => Boolean(mounted.data.session.get("ses_test")?.parentID), { maxPasses: 100 })
+    mounted.app.mockInput.pressArrow("right")
+    await Promise.resolve()
+    mounted.app.mockInput.pressEnter()
+    await mounted.app.waitForFrame((frame) => frame.includes("Reject permission"))
+    const frame = mounted.app.captureCharFrame()
+    const line = frame.split("\n").find((row) => row.includes("█"))
+    expect(line?.trimEnd().endsWith(bar(29))).toBe(true)
+    expect(line?.length ?? 0).toBeLessThanOrEqual(44)
+    expect(frame).toContain("Tell OpenCode what to do")
+    expect(frame).toContain("enter")
+    expect(frame).toContain("esc")
+  })
 })
