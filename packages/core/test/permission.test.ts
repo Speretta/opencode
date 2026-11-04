@@ -31,6 +31,21 @@ const it = testEffect(
     [Location.node.replace(current)],
   ),
 )
+const failingSaved = Layer.succeed(
+  PermissionSaved.Service,
+  PermissionSaved.Service.of({
+    list: () => Effect.succeed([]),
+    add: () => Effect.die(new Error("saved permission unavailable")),
+    update: () => Effect.die(new Error("saved permission unavailable")),
+    remove: () => Effect.void,
+  }),
+)
+const itFailingSaved = testEffect(
+  AppNodeBuilder.build(
+    LayerNode.group([Database.node, Bus.node, SessionStore.node, PermissionSaved.node, Agent.node, Permission.node]),
+    [Location.node.replace(current), PermissionSaved.node.replace(failingSaved)],
+  ),
+)
 
 function setup(rules: Permission.Ruleset = [], sessionID = Session.ID.make("ses_test")) {
   return Effect.gen(function* () {
@@ -444,6 +459,42 @@ describe("Permission", () => {
     }),
   )
 
+  it.effect("rejects a same-session batch once and cancels both timers", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const replies = yield* watchReplies()
+      const first = yield* waitForRequest({
+        id: Permission.ID.create("per_first"),
+        resources: ["src/first.ts"],
+      })
+      const second = yield* waitForRequest({
+        id: Permission.ID.create("per_second"),
+        resources: ["src/second.ts"],
+      })
+      yield* first.service.reply({ requestID: first.request.id, reply: "reject", message: "not now" })
+      const firstError = yield* Fiber.join(first.fiber).pipe(Effect.flip)
+      const secondError = yield* Fiber.join(second.fiber).pipe(Effect.flip)
+
+      expect(firstError).toBeInstanceOf(Permission.CorrectedError)
+      expect(secondError).toBeInstanceOf(Permission.CorrectedError)
+      expect(firstError).toMatchObject({ feedback: "not now" })
+      expect(secondError).toMatchObject({ feedback: "not now" })
+      expect(yield* first.service.list()).toEqual([])
+      expect(replies).toHaveLength(2)
+      expect(replies.map((reply) => reply.requestID).sort()).toEqual(
+        [first.request.id, second.request.id].sort(),
+      )
+      for (const reply of replies) {
+        expect(reply.reply).toBe("reject")
+        expect(reply.reason).toBeUndefined()
+      }
+
+      yield* TestClock.adjust(Duration.seconds(30))
+      yield* Effect.yieldNow
+      expect(replies).toHaveLength(2)
+    }),
+  )
+
   it.effect("settles a batch rejection and a timeout exactly once", () =>
     Effect.gen(function* () {
       yield* setup([
@@ -535,6 +586,23 @@ describe("Permission", () => {
       yield* TestClock.adjust(Duration.seconds(30))
       yield* Effect.yieldNow
       expect(replies).toHaveLength(2)
+    }),
+  )
+
+  itFailingSaved.effect("settles always even when saving the approval fails", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const replies = yield* watchReplies()
+      const { service, fiber, request } = yield* waitForRequest({ save: ["src/*"] })
+      yield* service.reply({ requestID: request.id, reply: "always" })
+      yield* Fiber.join(fiber)
+
+      expect(yield* service.list()).toEqual([])
+      expect(replies).toHaveLength(1)
+      expect(replies[0]).toMatchObject({ requestID: request.id, reply: "always" })
+      yield* TestClock.adjust(Duration.seconds(30))
+      yield* Effect.yieldNow
+      expect(replies).toHaveLength(1)
     }),
   )
 

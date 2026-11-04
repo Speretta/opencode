@@ -396,11 +396,22 @@ const layer = Layer.effect(
           }
 
           if (input.reply === "always" && existing.request.save?.length) {
-            yield* saved.add({
-              projectID: location.project.id,
-              action: existing.request.action,
-              resources: existing.request.save,
-            })
+            // The reply is already published and the entry claimed, so a storage failure must not
+            // leave the waiter hanging. Keep the approval for this request and ask again next time.
+            yield* saved
+              .add({
+                projectID: location.project.id,
+                action: existing.request.action,
+                resources: existing.request.save,
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("failed to save permission approval", {
+                    requestID: existing.request.id,
+                    cause,
+                  }),
+                ),
+              )
           }
           yield* Deferred.succeed(existing.deferred, undefined)
           if (input.reply !== "always" || !existing.request.save?.length) return
