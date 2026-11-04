@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Cause, Clock, Deferred, Duration, Effect, Fiber, Layer, Schema } from "effect"
-import { TestClock } from "effect/testing"
+import { TestClock, TestConsole } from "effect/testing"
 import { Agent } from "@opencode/core/agent"
 import { Database } from "@opencode/core/database/database"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
@@ -386,6 +386,19 @@ describe("Permission", () => {
     }),
   )
 
+  it.effect("stamps a finite future deadline for a duration above 2^31 milliseconds", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30d" }])
+      const before = yield* Clock.currentTimeMillis
+      const { request } = yield* waitForRequest()
+      expect(request.timeout).toBe(2_592_000_000)
+      expect(request.expires).toBe(before + 2_592_000_000)
+      expect(Number.isFinite(request.expires!)).toBe(true)
+      expect(Number.isNaN(request.expires!)).toBe(false)
+      expect(request.expires!).toBeGreaterThan(before)
+    }),
+  )
+
   it.effect("expires an unanswered assertion with a timeout reason", () =>
     Effect.gen(function* () {
       yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
@@ -599,7 +612,8 @@ describe("Permission", () => {
 
       expect(yield* service.list()).toEqual([])
       expect(replies).toHaveLength(1)
-      expect(replies[0]).toMatchObject({ requestID: request.id, reply: "always" })
+      expect(replies[0]).toMatchObject({ requestID: request.id, reply: "once" })
+      expect(yield* TestConsole.logLines).toContain("failed to save permission approval")
       yield* TestClock.adjust(Duration.seconds(30))
       yield* Effect.yieldNow
       expect(replies).toHaveLength(1)

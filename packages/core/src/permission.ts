@@ -368,10 +368,28 @@ const layer = Layer.effect(
           for (const [id] of batch) pending.delete(id)
 
           yield* cancelTimer(existing)
+          const replyValue =
+            input.reply === "always" && existing.request.save?.length
+              ? yield* saved
+                  .add({
+                    projectID: location.project.id,
+                    action: existing.request.action,
+                    resources: existing.request.save,
+                  })
+                  .pipe(
+                    Effect.as("always" as const),
+                    Effect.catchCause((cause) =>
+                      Effect.logWarning("failed to save permission approval", {
+                        requestID: existing.request.id,
+                        cause,
+                      }).pipe(Effect.as("once" as const)),
+                    ),
+                  )
+              : input.reply
           yield* bus.publish(Permission.Event.Replied, {
             sessionID: existing.request.sessionID,
             requestID: existing.request.id,
-            reply: input.reply,
+            reply: replyValue,
           })
 
           if (input.reply === "reject") {
@@ -395,26 +413,8 @@ const layer = Layer.effect(
             return
           }
 
-          if (input.reply === "always" && existing.request.save?.length) {
-            // The reply is already published and the entry claimed, so a storage failure must not
-            // leave the waiter hanging. Keep the approval for this request and ask again next time.
-            yield* saved
-              .add({
-                projectID: location.project.id,
-                action: existing.request.action,
-                resources: existing.request.save,
-              })
-              .pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("failed to save permission approval", {
-                    requestID: existing.request.id,
-                    cause,
-                  }),
-                ),
-              )
-          }
           yield* Deferred.succeed(existing.deferred, undefined)
-          if (input.reply !== "always" || !existing.request.save?.length) return
+          if (replyValue !== "always" || !existing.request.save?.length) return
 
           for (const [id, item] of pending) {
             const result = yield* evaluateInput({ ...item.request, agent: item.agent }).pipe(
