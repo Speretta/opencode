@@ -66,19 +66,21 @@ export const Effect = Schema.Literals(["allow", "deny", "ask"]).annotate({ ident
 export type Effect = typeof Effect.Type
 
 const timeoutUnitMillis = {
+  ns: 0.000001,
   ms: 1,
   s: 1_000,
   m: 60_000,
   h: 3_600_000,
   d: 86_400_000,
+  w: 604_800_000,
 } as const
 
 const positiveNumber = "(?:[1-9][0-9]*(?:\\.[0-9]+)?|0*\\.[0-9]*[1-9][0-9]*)"
 
-const compactTimeout = new RegExp(`^(${positiveNumber})\\s*(ms|s|m|h|d)$`)
+const compactTimeout = new RegExp(`^(${positiveNumber})\\s*(ns|ms|s|m|h|d|w)$`)
 
 const timeoutString = new RegExp(
-  `^(?:${positiveNumber}\\s*(?:ms|s|m|h|d)|${positiveNumber}\\s+(?:nano|nanos|micro|micros|milli|millis|second|seconds|minute|minutes|hour|hours|day|days|week|weeks))$`,
+  `^(?:${positiveNumber}\\s*(?:ns|ms|s|m|h|d|w)|${positiveNumber}\\s+(?:nano|nanos|micro|micros|milli|millis|second|seconds|minute|minutes|hour|hours|day|days|week|weeks))$`,
 )
 
 const parseFullTimeout = Schema.decodeUnknownOption(Schema.DurationFromString)

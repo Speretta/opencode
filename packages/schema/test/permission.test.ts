@@ -39,6 +39,9 @@ describe("permission timeouts", () => {
       ["1 week", 604_800_000],
       ["0.5ms", 0.5],
       ["1 nano", 0.000001],
+      ["1ns", 0.000001],
+      ["1w", 604_800_000],
+      ["30d", 2_592_000_000],
     ] as const) {
       const rule = decodeRule({ action: "shell", resource: "*", effect: "ask", timeout })
       expect(Permission.timeoutMillis(rule.timeout!)).toBe(millis)
@@ -52,8 +55,6 @@ describe("permission timeouts", () => {
       "NaN",
       " 1s",
       "1s ",
-      "1w",
-      "1ns",
       "0s",
       "0 seconds",
       "0.0m",
