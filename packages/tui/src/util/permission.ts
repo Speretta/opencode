@@ -189,7 +189,10 @@ export function permissionTimerPhase(remaining: number, timeout: number): Permis
   return "error"
 }
 
-/** Space left for bar cells after route padding, the prompt border, footer padding, label and one space. */
+/**
+ * Space left for bar cells after route padding, the prompt border, footer padding, label and one space.
+ * The session route pads 2 columns each at 44+ and 1 each below; the expanded portal reserves 2 each.
+ */
 export function permissionTimerBarCells(width: number, expanded: boolean, label: string) {
   const reserved = expanded ? 10 : width < 44 ? 8 : 10
   return Math.max(0, Math.min(60, width - reserved - stringWidth(label) - 1))
