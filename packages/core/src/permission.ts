@@ -458,11 +458,11 @@ const layer = Layer.effect(
           })
 
           if (input.reply === "reject") {
+            const message = input.message?.trim()
             const rejection = (action: string) =>
               new CorrectedError({
                 feedback:
-                  input.message ??
-                  `Permission ${action} was rejected by the user. Continue without this action or ask again.`,
+                  message || `Permission ${action} was rejected by the user. Continue without this action or ask again.`,
               })
             yield* Deferred.fail(existing.deferred, rejection(existing.request.action))
             for (const [, item] of batch) {

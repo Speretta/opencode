@@ -27,7 +27,7 @@ yield* permission.assert({
 })
 ```
 
-Leaves own resolution, permission, and side-effect ordering. Translate only expected typed errors into `ToolFailure`; do not use `catchCause`, because interruption and defects must survive. Service close/interruption from `Permission.assert` and question dismissals travel as defects beneath leaf `mapError` blankets and resurface as typed failures at `SessionModelRequest.executeTool`; leaves must never catch or convert them. A user decline (`Permission.CorrectedError`) stays typed and becomes a model-visible `ToolFailure`, so the step continues.
+Leaves own resolution, permission, and side-effect ordering. Translate only expected typed errors into `ToolFailure`; do not use `catchCause`, because interruption and defects must survive. Service close/closed paths in `Permission.assert` and question dismissals travel as defects beneath leaf `mapError` blankets and resurface as typed failures at `SessionModelRequest.executeTool`; leaves must never catch or convert them. Interruption stays a separate cause and is never turned into a decline. A user decline (`Permission.CorrectedError`) stays typed and becomes a model-visible `ToolFailure`, so the step continues.
 
 ## Registration
 

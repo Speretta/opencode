@@ -934,6 +934,29 @@ describe("Permission", () => {
     }),
   )
 
+  it.effect("uses default rejection feedback for empty messages", () =>
+    Effect.gen(function* () {
+      yield* setup()
+      for (const message of ["", "   "]) {
+        const { service, fiber, request } = yield* waitForRequest()
+        yield* service.reply({ requestID: request.id, reply: "reject", message })
+        const error = yield* Fiber.join(fiber).pipe(Effect.flip)
+
+        expect(error).toBeInstanceOf(Permission.CorrectedError)
+        expect(error).toMatchObject({
+          feedback: "Permission read was rejected by the user. Continue without this action or ask again.",
+        })
+      }
+
+      const { service, fiber, request } = yield* waitForRequest()
+      yield* service.reply({ requestID: request.id, reply: "reject", message: "  keep this  " })
+      const error = yield* Fiber.join(fiber).pipe(Effect.flip)
+
+      expect(error).toBeInstanceOf(Permission.CorrectedError)
+      expect(error).toMatchObject({ feedback: "keep this" })
+    }),
+  )
+
   it.effect("stores and removes saved resources for a project", () =>
     Effect.gen(function* () {
       yield* setup()
