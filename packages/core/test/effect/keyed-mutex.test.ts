@@ -48,6 +48,19 @@ describe("KeyedMutex", () => {
     }),
   )
 
+  it.effect("releases the lock when the holder defects", () =>
+    Effect.gen(function* () {
+      const mutex = yield* KeyedMutex.make<string>()
+      const first = yield* mutex.withLock("shared")(Effect.die(new Error("holder failed"))).pipe(Effect.forkChild)
+      yield* Fiber.await(first)
+
+      const secondStarted = yield* Deferred.make<void>()
+      yield* mutex.withLock("shared")(Deferred.succeed(secondStarted, undefined))
+      expect(yield* Deferred.isDone(secondStarted)).toBe(true)
+      expect(yield* mutex.size).toBe(0)
+    }),
+  )
+
   it.effect("removes an interrupted waiter without dropping the holder lock", () =>
     Effect.gen(function* () {
       const mutex = yield* KeyedMutex.make<string>()

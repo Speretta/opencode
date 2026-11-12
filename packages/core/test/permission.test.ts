@@ -43,6 +43,12 @@ const it = testEffect(
 const itQueued = testEffect(
   AppNodeBuilder.build(nodes, [Location.node.replace(current), Flag.node.replace(flagOn)]),
 )
+const itRelease = testEffect(
+  AppNodeBuilder.build(nodes, [
+    Location.node.replace(current),
+    Flag.node.replace(Flag.testLayer([], { app: { channel: "latest" } })),
+  ]),
+)
 const failingSaved = Layer.succeed(
   PermissionSaved.Service,
   PermissionSaved.Service.of({
@@ -50,6 +56,7 @@ const failingSaved = Layer.succeed(
     add: () => Effect.die(new Error("saved permission unavailable")),
     update: () => Effect.die(new Error("saved permission unavailable")),
     remove: () => Effect.void,
+    revision: () => Effect.succeed(0),
   }),
 )
 const itFailingSaved = testEffect(
@@ -57,6 +64,13 @@ const itFailingSaved = testEffect(
     Location.node.replace(current),
     PermissionSaved.node.replace(failingSaved),
     Flag.node.replace(flagOff),
+  ]),
+)
+const itQueuedFailingSaved = testEffect(
+  AppNodeBuilder.build(nodes, [
+    Location.node.replace(current),
+    PermissionSaved.node.replace(failingSaved),
+    Flag.node.replace(flagOn),
   ]),
 )
 
@@ -396,6 +410,40 @@ describe("Permission", () => {
         id: Permission.ID.create("per_test"),
         effect: "deny",
       })
+    }),
+  )
+
+  // Two Location-local Permission layers cannot share one global PermissionSaved instance through
+  // AppNodeBuilder in this harness, so the cross-Location case is covered by the project key directly.
+  it.effect("tracks saved-approval revisions per project", () =>
+    Effect.gen(function* () {
+      yield* setup()
+      const saved = yield* PermissionSaved.Service
+      const project = Project.ID.global
+      const other = Project.ID.make("project_other")
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: other, worktree: AbsolutePath.make("/other"), sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+        .pipe(Effect.orDie)
+      expect(yield* saved.revision(project)).toBe(0)
+      yield* saved.add({ projectID: project, action: "read", resources: ["docs/*"] })
+      expect(yield* saved.revision(project)).toBe(1)
+      const rule = (yield* saved.list({ projectID: project }))[0]!
+      yield* saved.update({ id: rule.id, resource: "src/*" })
+      expect(yield* saved.revision(project)).toBe(2)
+      yield* saved.remove(rule.id)
+      expect(yield* saved.revision(project)).toBe(3)
+      yield* saved.remove(PermissionSaved.ID.make("psv_missing"))
+      expect(yield* saved.revision(project)).toBe(3)
+      yield* saved.add({ projectID: project, action: "read", resources: [] })
+      expect(yield* saved.revision(project)).toBe(3)
+
+      yield* saved.add({ projectID: other, action: "read", resources: ["*"] })
+      expect(yield* saved.revision(other)).toBe(1)
+      expect(yield* saved.revision(project)).toBe(3)
     }),
   )
 
@@ -976,6 +1024,12 @@ describe("Permission", () => {
 })
 
 describe("Permission queue", () => {
+  itRelease.effect("keeps permission_queue off by default in release builds", () =>
+    Effect.gen(function* () {
+      expect(yield* Flag.enabled("permission_queue")).toBe(false)
+    }),
+  )
+
   it.effect("keeps parallel prompts when permission_queue is off", () =>
     Effect.gen(function* () {
       yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
@@ -1055,6 +1109,125 @@ describe("Permission queue", () => {
 
       expect(events.filter((event) => event.type === Permission.Event.Asked.type).map((event) => event.requestID)).toEqual(
         [first.request.id, secondRequest.id, thirdRequest.id],
+      )
+    }),
+  )
+
+  itQueued.effect("re-evaluates a queued assert after a saved rule is updated to match", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const saved = yield* PermissionSaved.Service
+      yield* saved.add({ projectID: Project.ID.global, action: "read", resources: ["docs/*"] })
+      const events = yield* watchEvents()
+      const holder = yield* waitForRequest({ id: Permission.ID.create("per_holder") })
+      const queued = yield* forkRequest({ id: Permission.ID.create("per_queued") })
+      yield* Effect.yieldNow
+      expect(yield* Deferred.isDone(queued.asked)).toBe(false)
+
+      const rule = (yield* saved.list({ projectID: Project.ID.global }))[0]!
+      yield* saved.update({ id: rule.id, resource: "src/*" })
+      expect(yield* saved.revision(Project.ID.global)).toBe(2)
+
+      yield* holder.service.reply({ requestID: holder.request.id, reply: "once" })
+      yield* Fiber.join(holder.fiber)
+      yield* Fiber.join(queued.fiber)
+
+      expect(yield* Deferred.isDone(queued.asked)).toBe(false)
+      expect(yield* queued.service.list()).toEqual([])
+      expect(events.filter((event) => event.type === Permission.Event.Asked.type).map((event) => event.requestID)).toEqual(
+        [holder.request.id],
+      )
+    }),
+  )
+
+  itQueued.effect("does not auto-allow after a matching saved rule is removed while queued", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const saved = yield* PermissionSaved.Service
+      const events = yield* watchEvents()
+      const holder = yield* waitForRequest({ id: Permission.ID.create("per_holder") })
+      const queued = yield* forkRequest({ id: Permission.ID.create("per_queued") })
+      yield* Effect.yieldNow
+      expect(yield* Deferred.isDone(queued.asked)).toBe(false)
+
+      yield* saved.add({ projectID: Project.ID.global, action: "read", resources: ["src/*"] })
+      const rule = (yield* saved.list({ projectID: Project.ID.global }))[0]!
+      yield* saved.remove(rule.id)
+      expect(yield* saved.revision(Project.ID.global)).toBe(2)
+
+      yield* holder.service.reply({ requestID: holder.request.id, reply: "once" })
+      yield* Fiber.join(holder.fiber)
+      const queuedRequest = yield* Deferred.await(queued.asked)
+      expect(yield* queued.service.list()).toEqual([queuedRequest])
+      yield* queued.service.reply({ requestID: queuedRequest.id, reply: "once" })
+      yield* Fiber.join(queued.fiber)
+
+      expect(events.filter((event) => event.type === Permission.Event.Asked.type).map((event) => event.requestID)).toEqual(
+        [holder.request.id, queuedRequest.id],
+      )
+    }),
+  )
+
+  itQueuedFailingSaved.effect("keeps asking after a failed always save leaves the revision unchanged", () =>
+    Effect.gen(function* () {
+      // The failing PermissionSaved layer returns revision 0 and defects on add.
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const saved = yield* PermissionSaved.Service
+      const replies = yield* watchReplies()
+      const holder = yield* waitForRequest({
+        id: Permission.ID.create("per_holder"),
+        save: ["src/*"],
+      })
+      const queued = yield* forkRequest({
+        id: Permission.ID.create("per_queued"),
+        resources: ["src/next.ts"],
+      })
+      yield* Effect.yieldNow
+      expect(yield* Deferred.isDone(queued.asked)).toBe(false)
+
+      yield* holder.service.reply({ requestID: holder.request.id, reply: "always" })
+      yield* Fiber.join(holder.fiber)
+      expect(yield* saved.revision(Project.ID.global)).toBe(0)
+      const queuedRequest = yield* Deferred.await(queued.asked)
+      expect(yield* queued.service.list()).toEqual([queuedRequest])
+      expect(replies[0]).toMatchObject({ requestID: holder.request.id, reply: "once" })
+      yield* queued.service.reply({ requestID: queuedRequest.id, reply: "once" })
+      yield* Fiber.join(queued.fiber)
+    }),
+  )
+
+  itQueued.effect("batch rejects an ask and an active assert in the same session", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const events = yield* watchEvents()
+      const holder = yield* waitForRequest({ id: Permission.ID.create("per_assert") })
+      const ask = yield* waitForAsk({ id: Permission.ID.create("per_ask") })
+      expect(yield* holder.service.list()).toEqual([holder.request, ask.request])
+
+      yield* holder.service.reply({ requestID: ask.request.id, reply: "reject", message: "stop" })
+      const error = yield* Fiber.join(holder.fiber).pipe(Effect.flip)
+      expect(error).toBeInstanceOf(Permission.CorrectedError)
+      expect(error).toMatchObject({ feedback: "stop" })
+      expect(yield* holder.service.list()).toEqual([])
+      expect(events).toHaveLength(4)
+      expect(events.map((event) => event.type)).toEqual([
+        Permission.Event.Asked.type,
+        Permission.Event.Asked.type,
+        Permission.Event.Replied.type,
+        Permission.Event.Replied.type,
+      ])
+      expect(events.filter((event) => event.type === Permission.Event.Asked.type).map((event) => event.requestID)).toEqual(
+        [holder.request.id, ask.request.id],
+      )
+      expect(
+        events.filter((event) => event.type === Permission.Event.Replied.type).map((event) => event.requestID),
+      ).toEqual([ask.request.id, holder.request.id])
+      for (const reply of events.filter((event) => event.type === Permission.Event.Replied.type)) {
+        expect(reply.reply).toBe("reject")
+        expect(reply.reason).toBeUndefined()
+      }
+      expect(yield* holder.service.reply({ requestID: ask.request.id, reply: "once" }).pipe(Effect.flip)).toBeInstanceOf(
+        Permission.NotFoundError,
       )
     }),
   )
@@ -1166,26 +1339,32 @@ describe("Permission queue", () => {
     }),
   )
 
-  itQueued.effect("close settles a holder and a queued waiter without hanging", () =>
+  // A failing permission.asked publication would require replacing the global Bus service with a
+  // wrapper that preserves listen/subscribe for every test helper; the shared harness cannot do that.
+  // Defect release is covered at the KeyedMutex primitive and by the interruption/close cases.
+  itQueued.effect("close settles a holder and two queued waiters without hanging", () =>
     Effect.gen(function* () {
       yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
       const events = yield* watchEvents()
       const holder = yield* waitForRequest({ id: Permission.ID.create("per_holder") })
-      const waiter = yield* forkRequest({ id: Permission.ID.create("per_waiter") })
+      const firstWaiter = yield* forkRequest({ id: Permission.ID.create("per_waiter_first") })
+      const secondWaiter = yield* forkRequest({ id: Permission.ID.create("per_waiter_second") })
       yield* Effect.yieldNow
       const service = yield* Permission.Service
       yield* service.close
 
-      const holderExit = yield* Fiber.await(holder.fiber)
-      const waiterExit = yield* Fiber.await(waiter.fiber)
-      const declined = (exit: typeof holderExit) =>
+      const exits = yield* Effect.all([
+        Fiber.await(holder.fiber),
+        Fiber.await(firstWaiter.fiber),
+        Fiber.await(secondWaiter.fiber),
+      ])
+      const declined = (exit: (typeof exits)[number]) =>
         exit._tag === "Failure" &&
         exit.cause.reasons.some(
           (reason) => Cause.isDieReason(reason) && reason.defect instanceof Permission.DeclinedError,
         )
-      expect(declined(holderExit)).toBe(true)
-      expect(declined(waiterExit)).toBe(true)
-      expect(yield* waiter.service.list()).toEqual([])
+      expect(exits.map(declined)).toEqual([true, true, true])
+      expect(yield* firstWaiter.service.list()).toEqual([])
       expect(events.filter((event) => event.type === Permission.Event.Asked.type).map((event) => event.requestID)).toEqual(
         [holder.request.id],
       )
