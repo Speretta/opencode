@@ -219,7 +219,6 @@ export function permissionToolFailure(
 ): "timeout" | "rejected" | undefined {
   if (type === "permission.rejected") return error?.includes("timed out after") ? "timeout" : "rejected"
   if (!error) return
-  if (error.includes("timed out after")) return "timeout"
   if (
     error.includes("QuestionRejectedError") ||
     error.includes("rejected permission") ||

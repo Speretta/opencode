@@ -90,6 +90,7 @@ test("classifies timeout and rejected tool failures", () => {
   expect(permissionToolFailure("not now", "permission.rejected")).toBe("rejected")
   expect(permissionToolFailure("rejected permission")).toBe("rejected")
   expect(permissionToolFailure("QuestionRejectedError")).toBe("rejected")
+  expect(permissionToolFailure("Command timed out after 30 seconds", "tool.execution")).toBeUndefined()
   expect(permissionToolFailure("boom", "tool.execution")).toBeUndefined()
   expect(permissionToolFailure(undefined)).toBeUndefined()
 })
