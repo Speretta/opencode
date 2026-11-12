@@ -10,6 +10,7 @@ import { Location } from "@opencode/core/location"
 import { Permission } from "@opencode/core/permission"
 import { PermissionTable } from "@opencode/core/permission/sql"
 import { PermissionSaved } from "@opencode/core/permission/saved"
+import { Flag } from "@opencode/core/flag"
 import { Project } from "@opencode/core/project"
 import { ProjectTable } from "@opencode/core/project/sql"
 import { AbsolutePath } from "@opencode/core/schema"
@@ -25,11 +26,22 @@ const current = Layer.succeed(
   Location.Service,
   Location.Service.of(location({ directory: AbsolutePath.make("/project") })),
 )
+const nodes = LayerNode.group([
+  Database.node,
+  Bus.node,
+  SessionStore.node,
+  PermissionSaved.node,
+  Agent.node,
+  Flag.node,
+  Permission.node,
+])
+const flagOff = Flag.testLayer([], { app: { channel: "latest" }, overrides: "-permission_queue" })
+const flagOn = Flag.testLayer([], { app: { channel: "latest" }, overrides: "permission_queue" })
 const it = testEffect(
-  AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionStore.node, PermissionSaved.node, Agent.node, Permission.node]),
-    [Location.node.replace(current)],
-  ),
+  AppNodeBuilder.build(nodes, [Location.node.replace(current), Flag.node.replace(flagOff)]),
+)
+const itQueued = testEffect(
+  AppNodeBuilder.build(nodes, [Location.node.replace(current), Flag.node.replace(flagOn)]),
 )
 const failingSaved = Layer.succeed(
   PermissionSaved.Service,
@@ -41,10 +53,11 @@ const failingSaved = Layer.succeed(
   }),
 )
 const itFailingSaved = testEffect(
-  AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionStore.node, PermissionSaved.node, Agent.node, Permission.node]),
-    [Location.node.replace(current), PermissionSaved.node.replace(failingSaved)],
-  ),
+  AppNodeBuilder.build(nodes, [
+    Location.node.replace(current),
+    PermissionSaved.node.replace(failingSaved),
+    Flag.node.replace(flagOff),
+  ]),
 )
 
 function setup(rules: Permission.Ruleset = [], sessionID = Session.ID.make("ses_test")) {
@@ -95,7 +108,7 @@ function assertion(input: Partial<Permission.AssertInput> = {}) {
   } satisfies Permission.AssertInput
 }
 
-function waitForRequest(input: Partial<Permission.AssertInput> = {}) {
+function forkRequest(input: Partial<Permission.AssertInput> = {}) {
   return Effect.gen(function* () {
     const value = assertion(input)
     const service = yield* Permission.Service
@@ -107,9 +120,34 @@ function waitForRequest(input: Partial<Permission.AssertInput> = {}) {
       return request.id === value.id ? Deferred.succeed(asked, request).pipe(Effect.asVoid) : Effect.void
     })
     yield* Effect.addFinalizer(() => unsubscribe)
-    const fiber = yield* service.assert(value).pipe(Effect.forkScoped)
+    const fiber = yield* service.assert(value).pipe(Effect.forkChild({ startImmediately: true }))
+    return { service, fiber, asked }
+  })
+}
+
+function waitForRequest(input: Partial<Permission.AssertInput> = {}) {
+  return Effect.gen(function* () {
+    const pending = yield* forkRequest(input)
+    const request = yield* Deferred.await(pending.asked)
+    return { ...pending, request }
+  })
+}
+
+function waitForAsk(input: Partial<Permission.AssertInput> = {}) {
+  return Effect.gen(function* () {
+    const value = assertion(input)
+    const service = yield* Permission.Service
+    const bus = yield* Bus.Service
+    const asked = yield* Deferred.make<Permission.Request>()
+    const unsubscribe = yield* bus.listen((event) => {
+      if (event.type !== Permission.Event.Asked.type) return Effect.void
+      const request = event.data as Permission.Request
+      return request.id === value.id ? Deferred.succeed(asked, request).pipe(Effect.asVoid) : Effect.void
+    })
+    yield* Effect.addFinalizer(() => unsubscribe)
+    const result = yield* service.ask(value)
     const request = yield* Deferred.await(asked)
-    return { service, fiber, request }
+    return { service, request, result }
   })
 }
 
@@ -476,22 +514,18 @@ describe("Permission", () => {
     Effect.gen(function* () {
       yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
       const replies = yield* watchReplies()
-      const first = yield* waitForRequest({
+      const first = yield* waitForAsk({
         id: Permission.ID.create("per_first"),
         resources: ["src/first.ts"],
       })
-      const second = yield* waitForRequest({
+      const second = yield* waitForAsk({
         id: Permission.ID.create("per_second"),
         resources: ["src/second.ts"],
       })
-      yield* first.service.reply({ requestID: first.request.id, reply: "reject", message: "not now" })
-      const firstError = yield* Fiber.join(first.fiber).pipe(Effect.flip)
-      const secondError = yield* Fiber.join(second.fiber).pipe(Effect.flip)
+      expect(first.result.effect).toBe("ask")
+      expect(second.result.effect).toBe("ask")
 
-      expect(firstError).toBeInstanceOf(Permission.CorrectedError)
-      expect(secondError).toBeInstanceOf(Permission.CorrectedError)
-      expect(firstError).toMatchObject({ feedback: "not now" })
-      expect(secondError).toMatchObject({ feedback: "not now" })
+      yield* first.service.reply({ requestID: first.request.id, reply: "reject", message: "not now" })
       expect(yield* first.service.list()).toEqual([])
       expect(replies).toHaveLength(2)
       expect(replies.map((reply) => reply.requestID).sort()).toEqual(
@@ -515,11 +549,11 @@ describe("Permission", () => {
         { action: "read", resource: "slow/*", effect: "ask", timeout: "1m" },
       ])
       const replies = yield* watchReplies()
-      const fast = yield* waitForRequest({
+      const fast = yield* waitForAsk({
         id: Permission.ID.create("per_fast"),
         resources: ["fast/file.ts"],
       })
-      const slow = yield* waitForRequest({
+      const slow = yield* waitForAsk({
         id: Permission.ID.create("per_slow"),
         resources: ["slow/file.ts"],
       })
@@ -531,7 +565,6 @@ describe("Permission", () => {
       expect(replies[0]).toMatchObject({ requestID: fast.request.id, reply: "reject", reason: "timeout" })
 
       yield* slow.service.reply({ requestID: slow.request.id, reply: "reject" })
-      yield* Fiber.await(slow.fiber)
       expect(replies).toHaveLength(2)
       expect(replies.map((reply) => reply.requestID).sort()).toEqual([fast.request.id, slow.request.id].sort())
       expect(yield* slow.service.reply({ requestID: fast.request.id, reply: "once" }).pipe(Effect.flip)).toBeInstanceOf(
@@ -626,8 +659,8 @@ describe("Permission", () => {
       yield* setup(rules)
       yield* setup(rules, Session.ID.make("ses_other"))
       const replies = yield* watchReplies()
-      const first = yield* waitForRequest()
-      const other = yield* waitForRequest({
+      const first = yield* waitForAsk()
+      const other = yield* waitForAsk({
         id: Permission.ID.create("per_other"),
         sessionID: Session.ID.make("ses_other"),
       })
@@ -636,7 +669,6 @@ describe("Permission", () => {
       expect(yield* first.service.list()).toEqual([other.request])
       expect(replies).toHaveLength(1)
       yield* other.service.reply({ requestID: other.request.id, reply: "once" })
-      yield* Fiber.join(other.fiber)
       expect(yield* other.service.list()).toEqual([])
     }),
   )
@@ -941,6 +973,290 @@ describe("Permission", () => {
       }),
     )
   }
+})
+
+describe("Permission queue", () => {
+  it.effect("keeps parallel prompts when permission_queue is off", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const first = yield* forkRequest({ id: Permission.ID.create("per_first") })
+      const second = yield* forkRequest({
+        id: Permission.ID.create("per_second"),
+        resources: ["src/second.ts"],
+      })
+      yield* Effect.yieldNow
+      const firstRequest = yield* Deferred.await(first.asked)
+      const secondRequest = yield* Deferred.await(second.asked)
+
+      expect(yield* first.service.list()).toEqual([firstRequest, secondRequest])
+      yield* first.service.reply({ requestID: firstRequest.id, reply: "once" })
+      yield* second.service.reply({ requestID: secondRequest.id, reply: "once" })
+      yield* Fiber.join(first.fiber)
+      yield* Fiber.join(second.fiber)
+    }),
+  )
+
+  itQueued.effect("serializes prompts and gives the next request a fresh timeout", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const events = yield* watchEvents()
+      const first = yield* waitForRequest({ id: Permission.ID.create("per_first") })
+      const second = yield* forkRequest({
+        id: Permission.ID.create("per_second"),
+        resources: ["src/second.ts"],
+      })
+      yield* Effect.yieldNow
+
+      expect(yield* Deferred.isDone(second.asked)).toBe(false)
+      expect(yield* first.service.list()).toEqual([first.request])
+
+      yield* TestClock.adjust(Duration.seconds(20))
+      expect(yield* first.service.list()).toEqual([first.request])
+      const resolved = yield* Clock.currentTimeMillis
+      yield* first.service.reply({ requestID: first.request.id, reply: "once" })
+      yield* Fiber.join(first.fiber)
+      const secondRequest = yield* Deferred.await(second.asked)
+
+      expect(secondRequest.expires).toBe(resolved + 30_000)
+      expect(events.filter((event) => event.type === Permission.Event.Asked.type).map((event) => event.requestID)).toEqual(
+        [first.request.id, secondRequest.id],
+      )
+
+      yield* Effect.yieldNow
+      yield* TestClock.adjust(Duration.seconds(29))
+      expect(yield* second.service.list()).toEqual([secondRequest])
+      yield* TestClock.adjust(Duration.seconds(1))
+      expect(yield* Fiber.join(second.fiber).pipe(Effect.flip)).toBeInstanceOf(Permission.CorrectedError)
+    }),
+  )
+
+  itQueued.effect("asks queued requests in call order", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const events = yield* watchEvents()
+      const first = yield* waitForRequest({ id: Permission.ID.create("per_first") })
+      const second = yield* forkRequest({ id: Permission.ID.create("per_second") })
+      const third = yield* forkRequest({ id: Permission.ID.create("per_third") })
+      yield* Effect.yieldNow
+
+      expect(yield* Deferred.isDone(second.asked)).toBe(false)
+      expect(yield* Deferred.isDone(third.asked)).toBe(false)
+
+      yield* first.service.reply({ requestID: first.request.id, reply: "once" })
+      yield* Fiber.join(first.fiber)
+      const secondRequest = yield* Deferred.await(second.asked)
+      expect(yield* Deferred.isDone(third.asked)).toBe(false)
+
+      yield* second.service.reply({ requestID: secondRequest.id, reply: "once" })
+      yield* Fiber.join(second.fiber)
+      const thirdRequest = yield* Deferred.await(third.asked)
+      yield* third.service.reply({ requestID: thirdRequest.id, reply: "once" })
+      yield* Fiber.join(third.fiber)
+
+      expect(events.filter((event) => event.type === Permission.Event.Asked.type).map((event) => event.requestID)).toEqual(
+        [first.request.id, secondRequest.id, thirdRequest.id],
+      )
+    }),
+  )
+
+  itQueued.effect("does not queue allow or deny evaluations behind a pending prompt", () =>
+    Effect.gen(function* () {
+      yield* setup([
+        { action: "read", resource: "*", effect: "ask", timeout: "30s" },
+        { action: "custom_allow", resource: "*", effect: "allow" },
+        { action: "custom_deny", resource: "*", effect: "deny" },
+      ])
+      const holder = yield* waitForRequest()
+      const service = yield* Permission.Service
+
+      yield* service.assert(assertion({ id: Permission.ID.create("per_allow"), action: "custom_allow" }))
+      expect(
+        yield* service.assert(assertion({ id: Permission.ID.create("per_deny"), action: "custom_deny" })).pipe(Effect.flip),
+      ).toBeInstanceOf(Permission.BlockedError)
+      expect(yield* service.list()).toEqual([holder.request])
+
+      yield* service.reply({ requestID: holder.request.id, reply: "once" })
+      yield* Fiber.join(holder.fiber)
+    }),
+  )
+
+  itQueued.effect("asks the next request after the holder is rejected with feedback", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const first = yield* waitForRequest({ id: Permission.ID.create("per_first") })
+      const second = yield* forkRequest({
+        id: Permission.ID.create("per_second"),
+        resources: ["src/second.ts"],
+      })
+      yield* Effect.yieldNow
+
+      yield* first.service.reply({ requestID: first.request.id, reply: "reject", message: "first only" })
+      const error = yield* Fiber.join(first.fiber).pipe(Effect.flip)
+      expect(error).toBeInstanceOf(Permission.CorrectedError)
+      expect(error).toMatchObject({ feedback: "first only" })
+
+      const secondRequest = yield* Deferred.await(second.asked)
+      expect(yield* second.service.list()).toEqual([secondRequest])
+      yield* second.service.reply({ requestID: secondRequest.id, reply: "once" })
+      yield* Fiber.join(second.fiber)
+    }),
+  )
+
+  itQueued.effect("asks the next request after the holder expires", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "10ms" }])
+      const first = yield* waitForRequest({ id: Permission.ID.create("per_first") })
+      const second = yield* forkRequest({
+        id: Permission.ID.create("per_second"),
+        resources: ["src/second.ts"],
+      })
+      yield* Effect.yieldNow
+
+      yield* TestClock.adjust(Duration.millis(10))
+      expect(yield* Fiber.join(first.fiber).pipe(Effect.flip)).toBeInstanceOf(Permission.CorrectedError)
+      const secondRequest = yield* Deferred.await(second.asked)
+      expect(secondRequest.expires).toBe((yield* Clock.currentTimeMillis) + 10)
+      yield* second.service.reply({ requestID: secondRequest.id, reply: "once" })
+      yield* Fiber.join(second.fiber)
+    }),
+  )
+
+  itQueued.effect("asks the next request after the holder is interrupted", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const first = yield* waitForRequest({ id: Permission.ID.create("per_first") })
+      const second = yield* forkRequest({
+        id: Permission.ID.create("per_second"),
+        resources: ["src/second.ts"],
+      })
+      yield* Effect.yieldNow
+
+      yield* Fiber.interrupt(first.fiber)
+      expect(yield* second.service.list()).toEqual([])
+      const secondRequest = yield* Deferred.await(second.asked)
+      yield* second.service.reply({ requestID: secondRequest.id, reply: "once" })
+      yield* Fiber.join(second.fiber)
+    }),
+  )
+
+  itQueued.effect("interrupting a waiter leaves no request and preserves the next waiter", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const events = yield* watchEvents()
+      const holder = yield* waitForRequest({ id: Permission.ID.create("per_holder") })
+      const interrupted = yield* forkRequest({ id: Permission.ID.create("per_interrupted") })
+      const next = yield* forkRequest({
+        id: Permission.ID.create("per_next"),
+        resources: ["src/next.ts"],
+      })
+      yield* Effect.yieldNow
+
+      yield* Fiber.interrupt(interrupted.fiber)
+      expect(yield* Deferred.isDone(interrupted.asked)).toBe(false)
+
+      yield* holder.service.reply({ requestID: holder.request.id, reply: "once" })
+      yield* Fiber.join(holder.fiber)
+      const nextRequest = yield* Deferred.await(next.asked)
+      yield* next.service.reply({ requestID: nextRequest.id, reply: "once" })
+      yield* Fiber.join(next.fiber)
+
+      expect(events.filter((event) => event.type === Permission.Event.Asked.type).map((event) => event.requestID)).toEqual(
+        [holder.request.id, nextRequest.id],
+      )
+    }),
+  )
+
+  itQueued.effect("close settles a holder and a queued waiter without hanging", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const events = yield* watchEvents()
+      const holder = yield* waitForRequest({ id: Permission.ID.create("per_holder") })
+      const waiter = yield* forkRequest({ id: Permission.ID.create("per_waiter") })
+      yield* Effect.yieldNow
+      const service = yield* Permission.Service
+      yield* service.close
+
+      const holderExit = yield* Fiber.await(holder.fiber)
+      const waiterExit = yield* Fiber.await(waiter.fiber)
+      const declined = (exit: typeof holderExit) =>
+        exit._tag === "Failure" &&
+        exit.cause.reasons.some(
+          (reason) => Cause.isDieReason(reason) && reason.defect instanceof Permission.DeclinedError,
+        )
+      expect(declined(holderExit)).toBe(true)
+      expect(declined(waiterExit)).toBe(true)
+      expect(yield* waiter.service.list()).toEqual([])
+      expect(events.filter((event) => event.type === Permission.Event.Asked.type).map((event) => event.requestID)).toEqual(
+        [holder.request.id],
+      )
+      expect(
+        events.filter((event) => event.type === Permission.Event.Replied.type).map((event) => event.requestID),
+      ).toEqual([holder.request.id])
+    }),
+  )
+
+  itQueued.effect("allows different sessions to prompt in parallel", () =>
+    Effect.gen(function* () {
+      const rules: Permission.Ruleset = [{ action: "read", resource: "*", effect: "ask", timeout: "30s" }]
+      yield* setup(rules)
+      yield* setup(rules, Session.ID.make("ses_other"))
+      const first = yield* forkRequest({ id: Permission.ID.create("per_first") })
+      const other = yield* forkRequest({
+        id: Permission.ID.create("per_other"),
+        sessionID: Session.ID.make("ses_other"),
+      })
+      yield* Effect.yieldNow
+      const firstRequest = yield* Deferred.await(first.asked)
+      const otherRequest = yield* Deferred.await(other.asked)
+      expect(yield* first.service.list()).toEqual([firstRequest, otherRequest])
+
+      yield* first.service.reply({ requestID: firstRequest.id, reply: "once" })
+      yield* other.service.reply({ requestID: otherRequest.id, reply: "once" })
+      yield* Fiber.join(first.fiber)
+      yield* Fiber.join(other.fiber)
+    }),
+  )
+
+  itQueued.effect("does not queue ask-created requests", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const holder = yield* waitForRequest({ id: Permission.ID.create("per_holder") })
+      const ask = yield* waitForAsk({ id: Permission.ID.create("per_ask") })
+
+      expect(ask.result.effect).toBe("ask")
+      expect(yield* holder.service.list()).toEqual([holder.request, ask.request])
+      yield* holder.service.reply({ requestID: ask.request.id, reply: "once" })
+      yield* holder.service.reply({ requestID: holder.request.id, reply: "once" })
+      yield* Fiber.join(holder.fiber)
+    }),
+  )
+
+  itQueued.effect("auto-allows a queued request after always without a second prompt", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const events = yield* watchEvents()
+      const first = yield* waitForRequest({ id: Permission.ID.create("per_first"), save: ["src/*"] })
+      const second = yield* forkRequest({
+        id: Permission.ID.create("per_second"),
+        resources: ["src/next.ts"],
+      })
+      yield* Effect.yieldNow
+      expect(yield* Deferred.isDone(second.asked)).toBe(false)
+
+      yield* first.service.reply({ requestID: first.request.id, reply: "always" })
+      yield* Fiber.join(first.fiber)
+      yield* Fiber.join(second.fiber)
+
+      expect(yield* Deferred.isDone(second.asked)).toBe(false)
+      expect(yield* second.service.list()).toEqual([])
+      expect(events.filter((event) => event.type === Permission.Event.Asked.type).map((event) => event.requestID)).toEqual(
+        [first.request.id],
+      )
+      expect(
+        events.filter((event) => event.type === Permission.Event.Replied.type).map((event) => event.requestID),
+      ).toEqual([first.request.id])
+    }),
+  )
 })
 
 describe("shell scanner permission impact", () => {
