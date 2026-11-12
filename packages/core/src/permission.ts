@@ -344,7 +344,8 @@ const layer = Layer.effect(
 
       return yield* queue.withLock(input.sessionID)(
         Effect.gen(function* () {
-          if (closed) return yield* Effect.die(new DeclinedError())
+          // Let create's closed branch settle this waiter without publishing a request.
+          if (closed) return yield* prompt(input, result.message, result.timeout)
           const current = savedRevision === revision ? result : yield* evaluateInput(input)
           if (current.effect === "deny") return yield* blocked(current)
           if (current.effect === "allow") return
