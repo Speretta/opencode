@@ -44,6 +44,7 @@ import {
   type SessionMessageUser,
   type SessionInfo,
   type ModelInfo,
+  type PermissionRequest,
 } from "@opencode/client"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
@@ -80,6 +81,7 @@ import { Composer } from "./composer"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
+import { permissionTimerDisc, permissionTimerRemaining, permissionToolFailure } from "../../util/permission"
 import { useToast } from "../../ui/toast"
 import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
@@ -2802,14 +2804,83 @@ function useToolPermission(part: () => SessionMessageAssistantTool | undefined) 
   const ctx = use()
   const data = useData()
   const local = useLocal()
-  return createMemo(() => {
-    if (local.permission.mode === "autoaccept") return false
-    const request = data.session.permission.list(ctx.sessionID)?.[0]
-    return request?.source?.type === "tool" && request.source.id === part()?.id
+  return createMemo((): "active" | "queued" | undefined => {
+    if (local.permission.mode === "autoaccept") return
+    const id = part()?.id
+    if (!id) return
+    const matches = (request: PermissionRequest) =>
+      request.source?.type === "tool" && request.source.id === id
+    if (data.session.permission.list(ctx.sessionID)?.some(matches)) return "active"
+    if (data.session.permission.queued(ctx.sessionID)?.some(matches)) return "queued"
   })
 }
 
-function InlineTool(props: {
+function usePermissionTimer(part: () => SessionMessageAssistantTool | undefined) {
+  const ctx = use()
+  const data = useData()
+  const request = createMemo(() => {
+    const id = part()?.id
+    if (!id) return
+    return data.session.permission.list(ctx.sessionID)?.find(
+      (item) => item.source?.type === "tool" && item.source.id === id,
+    )
+  })
+  const [now, setNow] = createSignal(Date.now())
+  let interval: ReturnType<typeof setInterval> | undefined
+  const stop = () => {
+    if (interval === undefined) return
+    clearInterval(interval)
+    interval = undefined
+  }
+  createEffect(() => {
+    const current = request()
+    stop()
+    const currentNow = Date.now()
+    setNow(currentNow)
+    if (!current || current.expires === undefined || current.timeout === undefined) return
+    if (permissionTimerRemaining(current.expires, current.timeout, currentNow) <= 0) return
+    interval = setInterval(() => {
+      const next = Date.now()
+      setNow(next)
+      if (permissionTimerRemaining(current.expires!, current.timeout!, next) <= 0) stop()
+    }, 250)
+  })
+  onCleanup(stop)
+  return createMemo(() => {
+    const current = request()
+    if (!current) return
+    if (current.expires === undefined || current.timeout === undefined) return "○"
+    return permissionTimerDisc(permissionTimerRemaining(current.expires, current.timeout, now()), current.timeout)
+  })
+}
+
+function usePermissionVisual(
+  part: () => SessionMessageAssistantTool | undefined,
+  error: () => string | undefined,
+  errorType: () => string | undefined = () => undefined,
+) {
+  const theme = useTheme()
+  const permission = useToolPermission(part)
+  const disc = usePermissionTimer(part)
+  const failure = createMemo(() => permissionToolFailure(error(), errorType()))
+  const active = createMemo(() => permission() === "active")
+  const queued = createMemo(() => permission() === "queued")
+  const timedOut = createMemo(() => failure() === "timeout")
+  const rejected = createMemo(() => failure() === "rejected")
+  const icon = createMemo(() => (timedOut() ? "●" : rejected() ? "✕" : active() ? disc() : undefined))
+  const color = createMemo(() =>
+    active()
+      ? theme.text.feedback.warning.base
+      : failure()
+        ? theme.text.feedback.error.base
+        : queued()
+          ? theme.text.muted
+          : undefined,
+  )
+  return { permission, failure, active, queued, timedOut, rejected, icon, color }
+}
+
+export function InlineTool(props: {
   icon: string
   color?: RGBA
   complete: unknown
@@ -2826,42 +2897,44 @@ function InlineTool(props: {
   const renderer = useRenderer()
   const [hover, setHover] = createSignal(false)
   const [errorExpanded, setErrorExpanded] = createSignal(false)
-  const permission = useToolPermission(() => props.part)
 
   const error = createMemo(() =>
     !props.running && props.part.state.status === "error" ? stripAnsi(props.part.state.error.message) : undefined,
   )
-
-  const denied = createMemo(
-    () =>
-      error()?.includes("QuestionRejectedError") ||
-      error()?.includes("rejected permission") ||
-      error()?.includes("specified a rule") ||
-      error()?.includes("user dismissed"),
+  const errorType = createMemo(() =>
+    props.part.state.status === "error" ? props.part.state.error.type : undefined,
   )
+  const visual = usePermissionVisual(() => props.part, error, errorType)
 
-  const failed = createMemo(() => Boolean(error() && !denied()))
+  const failed = createMemo(() => Boolean(error() && !visual.rejected()))
   const clickable = createMemo(() => Boolean(props.onClick || failed()))
   const fg = createMemo(() => {
+    if (visual.active()) return theme.text.feedback.warning.base
+    if (visual.queued()) return theme.text.muted
+    if (visual.failure()) return theme.text.feedback.error.base
     if (props.color) return props.color
-    if (permission()) return theme.text.feedback.warning.base
     if (failed()) return theme.text.feedback.error.base
     if (hover() && props.onClick) return theme.text.base
     return theme.text.muted
   })
+  const icon = createMemo(() => visual.icon() ?? props.icon)
+  const spinner = createMemo(() =>
+    visual.queued() ? true : visual.active() || visual.failure() ? false : props.spinner,
+  )
+  const complete = createMemo(() => (visual.active() || visual.failure() ? true : props.complete))
 
   return (
     <InlineToolRow
-      icon={props.icon}
+      icon={icon()}
       color={fg()}
       errorColor={theme.text.feedback.error.base}
       failed={failed()}
-      denied={Boolean(denied())}
+      denied={visual.rejected()}
       error={error()}
       errorExpanded={errorExpanded()}
-      complete={props.complete}
+      complete={complete()}
       pending={props.pending}
-      spinner={props.spinner}
+      spinner={spinner()}
       status={props.status}
       onMouseOver={() => clickable() && setHover(true)}
       onMouseOut={() => setHover(false)}
@@ -2891,7 +2964,7 @@ function StatusBadge(props: { children: string; raised?: boolean }) {
   )
 }
 
-type BlockToolProps = {
+export type BlockToolProps = {
   title?: string
   path?: { label: string; value: string }
   headerColor?: RGBA
@@ -2903,7 +2976,7 @@ type BlockToolProps = {
   errorColor?: RGBA
 }
 
-function BlockTool(props: BlockToolProps) {
+export function BlockTool(props: BlockToolProps) {
   const theme = useTheme()
   const background = () => theme.background.raised.base
   const ctx = use()
@@ -2912,7 +2985,17 @@ function BlockTool(props: BlockToolProps) {
   const error = createMemo(() =>
     stripAnsi(props.error ?? (props.part?.state.status === "error" ? props.part.state.error.message : "")),
   )
-  const permission = useToolPermission(() => props.part)
+  const errorType = createMemo(() =>
+    props.part?.state.status === "error" ? props.part.state.error.type : undefined,
+  )
+  const visual = usePermissionVisual(() => props.part, error, errorType)
+  const headerColor = createMemo(() => visual.color() ?? props.headerColor ?? theme.text.muted)
+  const indicator = createMemo(() => {
+    const icon = visual.icon()
+    if (icon) return { kind: "icon" as const, icon }
+    if (visual.queued() || props.spinner) return { kind: "spinner" as const }
+  })
+  const headerLabel = (label: string) => (indicator()?.kind === "spinner" ? label.replace(/^# /, "") : label)
   return (
     <box
       border={["left"]}
@@ -2937,45 +3020,44 @@ function BlockTool(props: BlockToolProps) {
         fallback={
           <Show when={props.title}>
             {(title) => (
-              <Show
-                when={props.spinner}
-                fallback={
-                  <text
-                    fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}
-                  >
-                    {title()}
-                  </text>
-                }
-              >
-                <Spinner color={permission() ? theme.text.feedback.warning.base : theme.text.muted}>
-                  {title().replace(/^# /, "")}
-                </Spinner>
-              </Show>
+              <box flexDirection="row" gap={1} flexShrink={0} minWidth={0}>
+                <Show when={indicator()}>
+                  {(value) =>
+                    value().kind === "spinner" ? (
+                      <Spinner color={headerColor()} />
+                    ) : (
+                      <text width={INLINE_TOOL_ICON_WIDTH} fg={headerColor()}>
+                        {value().icon}
+                      </text>
+                    )
+                  }
+                </Show>
+                <text fg={headerColor()}>{headerLabel(title())}</text>
+              </box>
             )}
           </Show>
         }
       >
         {(path) => (
           <box flexDirection="row" gap={1} minWidth={0}>
-            <Show
-              when={props.spinner}
-              fallback={
-                <text
-                  flexShrink={0}
-                  fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}
-                >
-                  {path().label}
-                </text>
+            <Show when={indicator()}>
+              {(value) =>
+                value().kind === "spinner" ? (
+                  <Spinner color={headerColor()} />
+                ) : (
+                  <text width={INLINE_TOOL_ICON_WIDTH} fg={headerColor()}>
+                    {value().icon}
+                  </text>
+                )
               }
-            >
-              <Spinner color={permission() ? theme.text.feedback.warning.base : theme.text.muted}>
-                {path().label.replace(/^# /, "")}
-              </Spinner>
             </Show>
+            <text flexShrink={0} fg={headerColor()}>
+              {headerLabel(path().label)}
+            </text>
             <FilePath
               value={path().value}
-              maxWidth={Math.max(2, ctx.width - 6 - stringWidth(path().label) - (props.spinner ? 2 : 0))}
-              fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}
+              maxWidth={Math.max(2, ctx.width - 6 - stringWidth(path().label) - (indicator() ? 2 : 0))}
+              fg={headerColor()}
             />
           </box>
         )}
@@ -3033,8 +3115,16 @@ function ShellDisplay(props: {
   const pathFormatter = usePathFormatter()
   // A Session can move while its shell is still running in the original Location.
   const location = data.shell.get(props.shellID ?? "")?.location ?? data.session.get(ctx.sessionID)?.location
-  const permission = useToolPermission(() => props.part)
-  const color = createMemo(() => (permission() ? theme.text.feedback.warning.base : theme.text.base))
+  const error = createMemo(() =>
+    props.part?.state.status === "error" ? stripAnsi(props.part.state.error.message) : undefined,
+  )
+  const errorType = createMemo(() =>
+    props.part?.state.status === "error" ? props.part.state.error.type : undefined,
+  )
+  const visual = usePermissionVisual(() => props.part, error, errorType)
+  const color = createMemo(() =>
+    visual.active() ? theme.text.feedback.warning.base : visual.queued() ? theme.text.muted : theme.text.base,
+  )
   const backgroundRunning = createMemo(() => {
     const id = props.shellID
     return Boolean(id && data.shell.get(id))
@@ -3139,31 +3229,27 @@ function ShellDisplay(props: {
             )
           }
         >
-          <Show
-            when={isRunning()}
-            fallback={
-              <text
-                fg={theme.text.base}
-                wrapMode={expanded() ? "word" : "char"}
-                maxHeight={expanded() ? undefined : 2}
-              >
-                {limitedInput()}
-              </text>
-            }
-          >
-            <box flexDirection="row" gap={1}>
+          <box flexDirection="row" gap={1}>
+            <Show when={visual.icon()}>
+              {(icon) => (
+                <text width={INLINE_TOOL_ICON_WIDTH} fg={visual.color() ?? color()}>
+                  {icon()}
+                </text>
+              )}
+            </Show>
+            <Show when={!visual.icon() && isRunning()}>
               <Spinner color={color()} />
-              <text
-                fg={color()}
-                wrapMode={expanded() ? "word" : "char"}
-                maxHeight={expanded() ? undefined : 2}
-                flexGrow={1}
-                minWidth={0}
-              >
-                {limitedInput()}
-              </text>
-            </box>
-          </Show>
+            </Show>
+            <text
+              fg={color()}
+              wrapMode={expanded() ? "word" : "char"}
+              maxHeight={expanded() ? undefined : 2}
+              flexGrow={1}
+              minWidth={0}
+            >
+              {limitedInput()}
+            </text>
+          </box>
           <Show when={limitedOutput()}>
             <text fg={theme.text.muted}>{limitedOutput()}</text>
           </Show>

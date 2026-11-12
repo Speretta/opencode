@@ -205,6 +205,30 @@ export function permissionTimerBar(remaining: number, timeout: number, cells: nu
   return { filled: "█".repeat(filled), empty: "░".repeat(size - filled) }
 }
 
+export function permissionTimerDisc(remaining: number, timeout: number) {
+  const ratio = timeout <= 0 ? 1 : Math.max(0, Math.min(1, remaining / timeout))
+  if (ratio > 0.75) return "○"
+  if (ratio > 0.5) return "◔"
+  if (ratio > 0.25) return "◑"
+  return "◕"
+}
+
+export function permissionToolFailure(
+  error: string | undefined,
+  type?: string,
+): "timeout" | "rejected" | undefined {
+  if (type === "permission.rejected") return error?.includes("timed out after") ? "timeout" : "rejected"
+  if (!error) return
+  if (error.includes("timed out after")) return "timeout"
+  if (
+    error.includes("QuestionRejectedError") ||
+    error.includes("rejected permission") ||
+    error.includes("specified a rule") ||
+    error.includes("user dismissed")
+  )
+    return "rejected"
+}
+
 function normalizeInput(action: string, value: unknown): Dict {
   const input = dict(value)
   const path = text(input.path) || text(input.filePath) || text(input.filepath)

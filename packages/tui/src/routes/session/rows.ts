@@ -105,9 +105,10 @@ export function createSessionRows(
 
   function pendingPermissions() {
     return new Set(
-      (data.session.permission.list(sessionID()) ?? []).flatMap((request) =>
-        request.source?.type === "tool" ? [request.source.id] : [],
-      ),
+      [
+        ...(data.session.permission.list(sessionID()) ?? []),
+        ...(data.session.permission.queued(sessionID()) ?? []),
+      ].flatMap((request) => (request.source?.type === "tool" ? [request.source.id] : [])),
     )
   }
 
