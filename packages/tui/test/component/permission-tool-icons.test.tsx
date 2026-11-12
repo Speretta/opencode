@@ -197,6 +197,35 @@ test("renders one compact row for active and queued permission tools", async () 
   }
 })
 
+test("flattens multi-line shell waiting summaries", async () => {
+  const command = "echo first\necho second"
+  const setup = await mount(() => (
+    <box flexDirection="column">
+      <ToolPart part={toolPart("shell-multiline", "shell", { command })} images={false} />
+    </box>
+  ))
+  try {
+    setup.renderer.start()
+    setup.events.emit({
+      id: "evt_queued_multiline",
+      created: 0,
+      type: "permission.queued",
+      data: {
+        sessionID: "ses_test",
+        requests: [toolRequest("per_shell_multiline", "shell-multiline", "shell", [command])],
+      },
+    })
+    await setup.waitFor(() => setup.data.session.permission.queued("ses_test")?.length === 1)
+    await setup.waitForFrame((frame) => frame.includes("$ echo first echo second"))
+
+    const lines = setup.captureCharFrame().split("\n")
+    expect(lines.filter((line) => line.includes("$ echo first echo second"))).toHaveLength(1)
+    expect(lines.filter((line) => line.includes("echo second"))).toHaveLength(1)
+  } finally {
+    await setup[Symbol.asyncDispose]()
+  }
+})
+
 test("shows queued, active, completed, rejected and timeout tool row states", async () => {
   const setup = await mount(() => (
     <box flexDirection="column">

@@ -2893,7 +2893,9 @@ function permissionToolSummary(part: SessionMessageAssistantTool, formatPath: (v
     },
     formatPath,
   )
-  return action === "shell" ? (presentation.lines[0] ?? presentation.title) : presentation.title
+  if (action !== "shell") return presentation.title
+  const command = stringValue(input.command)?.replace(/\s+/g, " ").trim()
+  return command ? `$ ${command}` : (presentation.lines[0] ?? presentation.title)
 }
 
 function PermissionToolRow(props: { part: SessionMessageAssistantTool; state: "active" | "queued" }) {
