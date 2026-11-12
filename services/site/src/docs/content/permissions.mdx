@@ -289,7 +289,9 @@ shell: git status * → allow
 Saved approvals are durable, project-scoped `allow` rules. They never override
 a configured `deny`. Tools choose the proposed saved pattern: some propose `*`,
 shell proposes command prefixes, and skills and subagents propose their IDs.
-Review broad approvals and remove those no longer needed.
+Review broad approvals and remove those no longer needed. If saving the approval
+fails, the current request is approved once and the next matching request
+prompts again.
 
 Clients may attach feedback when rejecting. Non-interactive clients must decide
 how to handle approval requests; configured `deny` rules always remain enforced.
