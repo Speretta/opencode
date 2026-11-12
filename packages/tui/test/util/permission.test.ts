@@ -88,6 +88,12 @@ test("shows the remaining-time disc in four bands", () => {
 test("classifies timeout and rejected tool failures", () => {
   expect(permissionToolFailure("Permission read timed out after 30s", "permission.rejected")).toBe("timeout")
   expect(permissionToolFailure("not now", "permission.rejected")).toBe("rejected")
+  expect(
+    permissionToolFailure(
+      "Permission read was rejected by the user. Continue without this action or ask again.",
+      "permission.rejected",
+    ),
+  ).toBe("rejected")
   expect(permissionToolFailure("rejected permission")).toBe("rejected")
   expect(permissionToolFailure("QuestionRejectedError")).toBe("rejected")
   expect(permissionToolFailure("Command timed out after 30 seconds", "tool.execution")).toBeUndefined()

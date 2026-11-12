@@ -3,7 +3,7 @@ import { realpathSync, watch } from "node:fs"
 import os from "os"
 import path from "path"
 import { describe, expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Scope, Stream, Tracer } from "effect"
+import { Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Scope, Stream, Tracer } from "effect"
 import { TestClock } from "effect/testing"
 import { Money } from "@opencode/schema/money"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
@@ -398,13 +398,16 @@ describe("ShellTool scanner permissions", () => {
           const result = yield* runPermissionCommand(registry, command, marker, reply ? [reply] : [])
           prompts.push(...result.requests)
           if (reply === "reject") {
-            expect(Exit.isFailure(result.exit)).toBe(true)
-            if (Exit.isFailure(result.exit))
-              expect(
-                result.exit.cause.reasons.some(
-                  (reason) => Cause.isDieReason(reason) && reason.defect instanceof Permission.DeclinedError,
-                ),
-              ).toBe(true)
+            expect(result.exit).toMatchObject({
+              _tag: "Success",
+              value: {
+                status: "error",
+                error: {
+                  type: "permission.rejected",
+                  message: "Permission shell was rejected by the user. Continue without this action or ask again.",
+                },
+              },
+            })
             expect(yield* Effect.promise(() => Bun.file(marker).exists())).toBe(false)
             continue
           }
@@ -502,13 +505,17 @@ describe("ShellTool scanner permissions", () => {
             { action: "external_directory", resources: [path.join(fixture.outside, "*")] },
           ])
           if (reply === "reject") {
-            expect(Exit.isFailure(result.exit)).toBe(true)
-            if (Exit.isFailure(result.exit))
-              expect(
-                result.exit.cause.reasons.some(
-                  (reason) => Cause.isDieReason(reason) && reason.defect instanceof Permission.DeclinedError,
-                ),
-              ).toBe(true)
+            expect(result.exit).toMatchObject({
+              _tag: "Success",
+              value: {
+                status: "error",
+                error: {
+                  type: "permission.rejected",
+                  message:
+                    "Permission external_directory was rejected by the user. Continue without this action or ask again.",
+                },
+              },
+            })
             expect(yield* Effect.promise(() => Bun.file(marker).exists())).toBe(false)
             continue
           }
@@ -632,7 +639,16 @@ describe("ShellTool conditional process substitution", () => {
               { action: "shell", resources: ["printf reached > marker", 'wait "$!"'], save: ["printf *", "wait *"] },
             ])
             if (reply === "reject") {
-              expect(Exit.isFailure(result.exit)).toBe(true)
+              expect(result.exit).toMatchObject({
+                _tag: "Success",
+                value: {
+                  status: "error",
+                  error: {
+                    type: "permission.rejected",
+                    message: "Permission shell was rejected by the user. Continue without this action or ask again.",
+                  },
+                },
+              })
               expect(yield* Effect.promise(() => Bun.file(marker).exists())).toBe(false)
               return
             }

@@ -918,20 +918,18 @@ describe("Permission", () => {
     }),
   )
 
-  it.effect("defects when an asked permission is declined", () =>
+  it.effect("continues when an asked permission is rejected", () =>
     Effect.gen(function* () {
       yield* setup()
       const { service, fiber, request } = yield* waitForRequest()
       yield* service.reply({ requestID: request.id, reply: "reject" })
-      const exit = yield* Fiber.await(fiber)
+      const error = yield* Fiber.join(fiber).pipe(Effect.flip)
 
-      expect(exit._tag).toBe("Failure")
-      if (exit._tag === "Failure")
-        expect(
-          exit.cause.reasons.some(
-            (reason) => Cause.isDieReason(reason) && reason.defect instanceof Permission.DeclinedError,
-          ),
-        ).toBe(true)
+      expect(error).toBeInstanceOf(Permission.CorrectedError)
+      expect(error).toMatchObject({
+        feedback: "Permission read was rejected by the user. Continue without this action or ask again.",
+      })
+      expect(error).not.toBeInstanceOf(Permission.DeclinedError)
       expect(yield* service.list()).toEqual([])
     }),
   )
@@ -1099,6 +1097,49 @@ describe("Permission queue", () => {
       expect(yield* second.service.list()).toEqual([secondRequest])
       yield* TestClock.adjust(Duration.seconds(1))
       expect(yield* Fiber.join(second.fiber).pipe(Effect.flip)).toBeInstanceOf(Permission.CorrectedError)
+    }),
+  )
+
+  itQueued.effect("continues a parallel batch after a timeout, a rejection and an allow", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const timed = yield* forkRequest({
+        id: Permission.ID.create("per_timed"),
+        resources: ["src/timed.ts"],
+      })
+      yield* Deferred.await(timed.asked)
+      const rejected = yield* forkRequest({
+        id: Permission.ID.create("per_rejected"),
+        resources: ["src/rejected.ts"],
+      })
+      const allowed = yield* forkRequest({
+        id: Permission.ID.create("per_allowed"),
+        resources: ["src/allowed.ts"],
+      })
+      yield* Effect.yieldNow
+
+      yield* TestClock.adjust(Duration.seconds(30))
+      const timeoutError = yield* Fiber.join(timed.fiber).pipe(Effect.flip)
+
+      const rejectedRequest = yield* Deferred.await(rejected.asked)
+      yield* rejected.service.reply({ requestID: rejectedRequest.id, reply: "reject" })
+      const rejectionError = yield* Fiber.join(rejected.fiber).pipe(Effect.flip)
+
+      const allowedRequest = yield* Deferred.await(allowed.asked)
+      yield* allowed.service.reply({ requestID: allowedRequest.id, reply: "once" })
+      yield* Fiber.join(allowed.fiber)
+
+      expect(timeoutError).toBeInstanceOf(Permission.CorrectedError)
+      expect(timeoutError).toMatchObject({
+        feedback: "Permission read timed out after 30s; nobody answered. Continue without this action or ask again.",
+      })
+      expect(rejectionError).toBeInstanceOf(Permission.CorrectedError)
+      expect(rejectionError).toMatchObject({
+        feedback: "Permission read was rejected by the user. Continue without this action or ask again.",
+      })
+      expect(timeoutError).not.toBeInstanceOf(Permission.DeclinedError)
+      expect(rejectionError).not.toBeInstanceOf(Permission.DeclinedError)
+      expect(yield* timed.service.list()).toEqual([])
     }),
   )
 
