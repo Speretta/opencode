@@ -339,6 +339,12 @@ or ask again. The TUI shows a countdown bar while the prompt is pending,
 including while entering rejection feedback; feedback typed after the request
 expires is discarded.
 
+With the `permission_queue` experimental flag enabled, tool permission prompts
+are serialized per session. A second tool waits instead of starting its own
+timer, so each prompt gets its full timeout window. In an unattended session,
+N queued prompts can therefore mean N times the wait. HTTP-created `ask`
+requests are not queued.
+
 ## Policies
 
 A [policy](/policies) can hard-deny a permission check after these rules and saved
