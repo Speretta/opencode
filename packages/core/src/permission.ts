@@ -353,10 +353,9 @@ const layer = Layer.effect(
           const item = yield* create(request(input, message, timeout), input.agent)
           return yield* restore(Deferred.await(item.deferred)).pipe(
             // Deliberate defect tunnel: leaves wrap execution in blanket `mapError`, which
-            // must not convert a user's decline into model-facing tool output. The decline
-            // resurfaces as a typed failure at SessionModelRequest.executeTool. A decline
-            // WITH feedback (CorrectedError) intentionally stays typed so the leaf can turn
-            // it into ToolFailure and the model continues.
+            // must not convert a service close or interruption into model-facing tool output.
+            // User declines arrive as CorrectedError, stay typed, and the leaf turns them into
+            // ToolFailure so the model continues.
             Effect.catchTag("Permission.DeclinedError", (error) => Effect.die(error)),
             Effect.ensuring(
               Effect.suspend(() => {
@@ -459,10 +458,13 @@ const layer = Layer.effect(
           })
 
           if (input.reply === "reject") {
-            yield* Deferred.fail(
-              existing.deferred,
-              input.message ? new CorrectedError({ feedback: input.message }) : new DeclinedError(),
-            )
+            const rejection = (action: string) =>
+              new CorrectedError({
+                feedback:
+                  input.message ??
+                  `Permission ${action} was rejected by the user. Continue without this action or ask again.`,
+              })
+            yield* Deferred.fail(existing.deferred, rejection(existing.request.action))
             for (const [, item] of batch) {
               yield* cancelTimer(item)
               yield* bus.publish(Permission.Event.Replied, {
@@ -470,11 +472,8 @@ const layer = Layer.effect(
                 requestID: item.request.id,
                 reply: "reject",
               })
-              // Feedback applies to the whole batch, so parallel asks don't end the step.
-              yield* Deferred.fail(
-                item.deferred,
-                input.message ? new CorrectedError({ feedback: input.message }) : new DeclinedError(),
-              )
+              // Rejection feedback applies to the whole batch, so parallel asks don't end the step.
+              yield* Deferred.fail(item.deferred, rejection(item.request.action))
             }
             return
           }
