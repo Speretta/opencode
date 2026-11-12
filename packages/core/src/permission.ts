@@ -145,7 +145,6 @@ const layer = Layer.effect(
     const scope = yield* Effect.scope
     const pending = new Map<ID, Pending>()
     const queue = KeyedMutex.makeUnsafe<SessionSchema.ID>()
-    let savedRevision = 0
     let closed = false
 
     const cancelTimer = (item: Pending) => (item.timer === undefined ? Effect.void : Fiber.interrupt(item.timer))
@@ -329,7 +328,7 @@ const layer = Layer.effect(
 
     const assert = Effect.fn("Permission.assert")(function* (input: AssertInput) {
       if (closed) return yield* Effect.die(new DeclinedError())
-      const revision = savedRevision
+      const revision = yield* saved.revision(location.project.id)
       const result = yield* evaluateInput(input)
       const blocked = (value: typeof result) =>
         new BlockedError({
@@ -346,7 +345,8 @@ const layer = Layer.effect(
         Effect.gen(function* () {
           // Let create's closed branch settle this waiter without publishing a request.
           if (closed) return yield* prompt(input, result.message, result.timeout)
-          const current = savedRevision === revision ? result : yield* evaluateInput(input)
+          const current =
+            (yield* saved.revision(location.project.id)) === revision ? result : yield* evaluateInput(input)
           if (current.effect === "deny") return yield* blocked(current)
           if (current.effect === "allow") return
           return yield* prompt(input, current.message, current.timeout)
@@ -395,11 +395,6 @@ const layer = Layer.effect(
                     resources: existing.request.save,
                   })
                   .pipe(
-                    Effect.andThen(
-                      Effect.sync(() => {
-                        savedRevision++
-                      }),
-                    ),
                     Effect.as("always" as const),
                     Effect.catchCause((cause) =>
                       Effect.logWarning("failed to save permission approval", {

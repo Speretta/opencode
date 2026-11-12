@@ -47,6 +47,8 @@ export interface Interface {
   readonly add: (input: AddInput) => Effect.Effect<void>
   readonly update: (input: UpdateInput) => Effect.Effect<Info, NotFoundError | ConflictError>
   readonly remove: (id: ID) => Effect.Effect<void>
+  /** Monotonic per-project revision, advanced by a successful add, update or remove. */
+  readonly revision: (projectID: Project.ID) => Effect.Effect<number>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/PermissionSaved") {}
@@ -55,6 +57,12 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const db = (yield* Database.Service).db
+    const revisions = new Map<Project.ID, number>()
+    const revision = (projectID: Project.ID) => Effect.sync(() => revisions.get(projectID) ?? 0)
+    const bump = (projectID: Project.ID) =>
+      Effect.sync(() => {
+        revisions.set(projectID, (revisions.get(projectID) ?? 0) + 1)
+      })
 
     const list = Effect.fnUntraced(function* (input?: ListInput) {
       const rows = yield* db
@@ -81,6 +89,8 @@ const layer = Layer.effect(
         .onConflictDoNothing()
         .run()
         .pipe(Effect.orDie)
+      // A duplicate no-op insert still advances the revision; re-evaluation is idempotent.
+      yield* bump(input.projectID)
     })
 
     const update = Effect.fn("PermissionSaved.update")(function* (input: UpdateInput) {
@@ -105,14 +115,23 @@ const layer = Layer.effect(
           Effect.catchTag("EffectDrizzleQueryError", (error) => Effect.die(error)),
         )
       if (!updated) return yield* new NotFoundError({ id: input.id })
+      yield* bump(updated.project_id)
       return info(updated)
     })
 
     const remove = Effect.fn("PermissionSaved.remove")(function* (id: ID) {
+      const current = yield* db
+        .select()
+        .from(PermissionTable)
+        .where(eq(PermissionTable.id, id))
+        .get()
+        .pipe(Effect.orDie)
+      if (!current) return
       yield* db.delete(PermissionTable).where(eq(PermissionTable.id, id)).run().pipe(Effect.orDie)
+      yield* bump(current.project_id)
     })
 
-    return Service.of({ list, add, update, remove })
+    return Service.of({ list, add, update, remove, revision })
   }),
 )
 
