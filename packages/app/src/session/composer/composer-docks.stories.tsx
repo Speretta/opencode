@@ -7,9 +7,9 @@ import {
 import { SessionTimeline } from "@opencode/session-ui/timeline"
 import { motionTuning } from "@opencode/ui/motion-tuning"
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query"
-import { createEffect, on, onCleanup } from "solid-js"
+import { createEffect, createSignal, on, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
-import type { FormInfo } from "@opencode/client/promise"
+import type { FormInfo, PermissionRequest } from "@opencode/client/promise"
 import { Composer } from "@/composer/composer"
 import { createPromptController } from "@/session/story-model"
 import type { WebSearchRequestModel } from "@/session/requests/websearch"
@@ -21,10 +21,43 @@ import { SubagentBar } from "./subagent-bar"
 type DockArgs = {
   question: boolean
   permission: boolean
+  permissionTimer: boolean
+  permissionQueued: number
   websearch: boolean
   queue: number
   subagent: boolean
 }
+
+const permissionQueueRequests = [
+  {
+    id: "permission_queue_read",
+    sessionID: activePermissionRequest.sessionID,
+    action: "read",
+    resources: ["packages/app/src/session/requests/model.ts"],
+    source: { type: "tool", messageID: "msg_permission_queue_read", id: "tool_permission_queue_read" },
+  },
+  {
+    id: "permission_queue_shell",
+    sessionID: activePermissionRequest.sessionID,
+    action: "shell",
+    resources: ["bun test", "bun run typecheck"],
+    source: { type: "tool", messageID: "msg_permission_queue_shell", id: "tool_permission_queue_shell" },
+  },
+  {
+    id: "permission_queue_edit",
+    sessionID: activePermissionRequest.sessionID,
+    action: "edit",
+    resources: ["packages/app/src/session/requests/session-permission-dock.tsx"],
+    source: { type: "tool", messageID: "msg_permission_queue_edit", id: "tool_permission_queue_edit" },
+  },
+  {
+    id: "permission_queue_glob",
+    sessionID: activePermissionRequest.sessionID,
+    action: "glob",
+    resources: ["packages/app/src/**/*.ts"],
+    source: { type: "tool", messageID: "msg_permission_queue_glob", id: "tool_permission_queue_glob" },
+  },
+] satisfies PermissionRequest[]
 
 const prompts = [
   "Rename the Alpha export",
@@ -45,6 +78,7 @@ const websearchRequest: FormInfo = {
 // buttons (the components lab shows them under Knobs → Composer → Docks). Answering, dismissing and Esc close docks the way they do in the app.
 function ComposerDocksPreview(props: DockArgs) {
   const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+  const [permissionExpires] = createSignal(Date.now() + 30_000)
 
   const [state, setState] = createStore({
     ...props,
@@ -66,9 +100,18 @@ function ComposerDocksPreview(props: DockArgs) {
 
   createEffect(
     on(
-      () => [props.question, props.permission, props.websearch, props.queue, props.subagent] as const,
-      ([question, permission, websearch, queue, subagent]) => {
-        setState({ question, permission, websearch, subagent })
+      () =>
+        [
+          props.question,
+          props.permission,
+          props.permissionTimer,
+          props.permissionQueued,
+          props.websearch,
+          props.queue,
+          props.subagent,
+        ] as const,
+      ([question, permission, permissionTimer, permissionQueued, websearch, queue, subagent]) => {
+        setState({ question, permission, permissionTimer, permissionQueued, websearch, subagent })
         queueTo(queue)
       },
       { defer: true },
@@ -132,7 +175,13 @@ function ComposerDocksPreview(props: DockArgs) {
         submit: async () => void setState("websearch", false),
       } satisfies WebSearchRequestModel,
       elicitationRequest: () => undefined,
-    permissionRequest: () => (state.permission ? activePermissionRequest : undefined),
+      permissionRequest: () =>
+        state.permission
+          ? state.permissionTimer
+            ? { ...activePermissionRequest, timeout: 30_000, expires: permissionExpires() }
+            : activePermissionRequest
+          : undefined,
+      permissionQueued: () => permissionQueueRequests.slice(0, state.permissionQueued),
       permissionResponding: () => false,
       decide: () => {
         deciding = true
@@ -216,9 +265,18 @@ export default {
     },
   },
   argTypes: {
+    permissionQueued: { control: { type: "range", min: 0, max: 4, step: 1 } },
     queue: { control: { type: "range", min: 0, max: 4, step: 1 } },
   },
-  args: { question: false, permission: false, websearch: false, queue: 0, subagent: false } satisfies DockArgs,
+  args: {
+    question: false,
+    permission: false,
+    permissionTimer: false,
+    permissionQueued: 0,
+    websearch: false,
+    queue: 0,
+    subagent: false,
+  } satisfies DockArgs,
   render: (args: DockArgs) => <ComposerDocksPreview {...args} />,
 }
 
@@ -231,6 +289,8 @@ export const QueueThree = { args: { queue: 3 } }
 export const Question = { args: { question: true } }
 
 export const QuestionAndPermission = { args: { question: true, permission: true } }
+
+export const Permission = { args: { permission: true, permissionTimer: true, permissionQueued: 3 } }
 
 export const WebSearch = { args: { websearch: true } }
 

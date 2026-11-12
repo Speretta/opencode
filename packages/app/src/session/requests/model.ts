@@ -144,6 +144,18 @@ export function createSessionRequestModel() {
     )
   })
 
+  const permissionQueued = createMemo((): readonly PermissionRequest[] => {
+    const id = params.id
+
+    if (!id) return []
+
+    const activeID = permissionRequest()?.id
+
+    return (data.session.permission.queued(id) ?? []).filter(
+      (item) => item.id !== activeID && !isPermissionReplied(replyState(item.id)),
+    )
+  })
+
   const blocked = createMemo(() => {
     const id = params.id
 
@@ -264,6 +276,7 @@ export function createSessionRequestModel() {
     elicitationRequest,
     websearch,
     permissionRequest,
+    permissionQueued,
     permissionResponding,
     background: {
       blocking,

@@ -1,10 +1,18 @@
 import { Option, Schema } from "effect"
-import { For, Show } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js"
 import type { PermissionRequest } from "@opencode/client/promise"
 import { Button } from "@opencode/ui/button"
 import { DockPrompt } from "@opencode/session-ui/dock-prompt"
 import { Icon } from "@opencode/ui/icon"
+import { SessionProgressIndicatorV2 } from "@opencode/session-ui/v2/session-progress-indicator-v2"
 import { useLanguage } from "@/runtime/i18n/language"
+import {
+  permissionLabel,
+  permissionPhase,
+  permissionProgress,
+  permissionQueueSummary,
+  permissionRemaining,
+} from "./permission-dock"
 
 const decodeToolInput = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Unknown))
 
@@ -13,9 +21,34 @@ const isString = Schema.is(Schema.String)
 export function SessionPermissionDock(props: {
   request: PermissionRequest
   responding: boolean
+  queued: readonly PermissionRequest[]
   onDecide: (response: "once" | "always" | "reject") => void
 }) {
   const language = useLanguage()
+  const [now, setNow] = createSignal(Date.now())
+
+  createEffect(
+    on(
+      () => [props.request.id, props.request.expires, props.request.timeout] as const,
+      ([, expires, timeout]) => {
+        if (expires === undefined || timeout === undefined || timeout <= 0) return
+        setNow(Date.now())
+        const interval = setInterval(() => setNow(Date.now()), 250)
+        onCleanup(() => clearInterval(interval))
+      },
+    ),
+  )
+
+  const timer = createMemo(() => {
+    const { expires, timeout } = props.request
+    if (expires === undefined || timeout === undefined || timeout <= 0) return
+    const remaining = permissionRemaining(expires, timeout, now())
+    return {
+      phase: permissionPhase(remaining, timeout),
+      label: permissionLabel(remaining),
+      progress: permissionProgress(remaining, timeout),
+    }
+  })
 
   const toolDescription = () => {
     const key = `settings.permissions.tool.${props.request.action}.description`
@@ -47,7 +80,16 @@ export function SessionPermissionDock(props: {
       }
       footer={
         <>
-          <div />
+          <Show when={timer()}>
+            {(value) => (
+              <div data-slot="permission-timer" data-phase={value().phase}>
+                <div data-slot="permission-timer-track" aria-hidden="true">
+                  <div data-slot="permission-timer-fill" style={{ width: `${value().progress * 100}%` }} />
+                </div>
+                <span data-slot="permission-timer-label">{value().label}</span>
+              </div>
+            )}
+          </Show>
           <div data-slot="permission-footer-actions">
             <Button variant="ghost" size="normal" onClick={() => props.onDecide("reject")} disabled={props.responding}>
               {language.t("ui.permission.deny")}
@@ -101,6 +143,23 @@ export function SessionPermissionDock(props: {
               {(pattern) => <code class="text-text-base break-all">{pattern}</code>}
             </For>
           </div>
+        </div>
+      </Show>
+
+      <Show when={props.queued.length > 0}>
+        <div data-slot="permission-queue">
+          <div data-slot="permission-queue-title">{language.t("ui.message.queued")}</div>
+          <For each={props.queued.slice(0, 3)}>
+            {(request) => (
+              <div data-slot="permission-queue-row">
+                <SessionProgressIndicatorV2 />
+                <span data-slot="permission-queue-summary">{permissionQueueSummary(request)}</span>
+              </div>
+            )}
+          </For>
+          <Show when={props.queued.length > 3}>
+            <div data-slot="permission-queue-more">+{props.queued.length - 3}</div>
+          </Show>
         </div>
       </Show>
     </DockPrompt>

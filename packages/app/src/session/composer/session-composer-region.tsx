@@ -14,6 +14,7 @@ type SessionComposerRegionState = Pick<
   | "elicitationRequest"
   | "websearch"
   | "permissionRequest"
+  | "permissionQueued"
   | "permissionResponding"
   | "decide"
   | "blocked"
@@ -86,6 +87,7 @@ export function SessionComposerRegion(props: {
                     <SessionPermissionDock
                       request={request}
                       responding={controller.state.permissionResponding()}
+                      queued={controller.state.permissionQueued()}
                       onDecide={(response) => {
                         controller.onResponseSubmit()
                         controller.state.decide(response)
