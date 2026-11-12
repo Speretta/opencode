@@ -60,7 +60,16 @@ const Replied = ephemeral({
       .pipe(optional),
   },
 })
-export const Event = { Asked, Replied, Definitions: inventory(Asked, Replied) }
+const Queued = ephemeral({
+  type: "permission.queued",
+  schema: {
+    sessionID: SessionID,
+    requests: Schema.Array(Request).annotate({
+      description: "Requests waiting in the session permission queue, in admission order.",
+    }),
+  },
+})
+export const Event = { Asked, Replied, Queued, Definitions: inventory(Asked, Replied, Queued) }
 
 export const Effect = Schema.Literals(["allow", "deny", "ask"]).annotate({ identifier: "Permission.Effect" })
 export type Effect = typeof Effect.Type

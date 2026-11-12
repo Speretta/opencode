@@ -2132,6 +2132,7 @@ export type EventSubscribeInput = {
         | "reference.updated"
         | "permission.asked"
         | "permission.replied"
+        | "permission.queued"
         | "plugin.updated"
         | "project.updated"
         | "worktree.updated"

@@ -135,6 +135,7 @@ type Store = {
     messageLoading: Record<string, boolean>
     pending: Record<string, SessionInboxInfo[]>
     permission: Record<string, PermissionRequest[]>
+    permissionQueue: Record<string, PermissionRequest[]>
     // Pending forms keyed by owner: a session ID or the temporary "global" elicitation sentinel.
     form: Record<string, FormWithLocation[]>
   }
@@ -305,6 +306,7 @@ export function createData(config: CreateDataInput) {
       messageLoading: {},
       pending: {},
       permission: {},
+      permissionQueue: {},
       form: {},
     },
     project: {
@@ -343,13 +345,21 @@ export function createData(config: CreateDataInput) {
 
   function removePermission(sessionID: string, requestID: string) {
     const requests = store.session.permission[sessionID]
-    if (!requests?.some((request) => request.id === requestID)) return
-    setStore(
-      "session",
-      "permission",
-      sessionID,
-      requests.filter((request) => request.id !== requestID),
-    )
+    if (requests?.some((request) => request.id === requestID))
+      setStore(
+        "session",
+        "permission",
+        sessionID,
+        requests.filter((request) => request.id !== requestID),
+      )
+    const queued = store.session.permissionQueue[sessionID]
+    if (queued?.some((request) => request.id === requestID))
+      setStore(
+        "session",
+        "permissionQueue",
+        sessionID,
+        queued.filter((request) => request.id !== requestID),
+      )
   }
 
   function removeForm(sessionID: string, formID: string, ref?: LocationRef) {
@@ -635,6 +645,7 @@ export function createData(config: CreateDataInput) {
         delete draft.messageCursor[sessionID]
         delete draft.messageLoading[sessionID]
         delete draft.pending[sessionID]
+        delete draft.permissionQueue[sessionID]
         if (messages.length) draft.message[sessionID] = messages
         if (pending.length) draft.pending[sessionID] = pending
       }),
@@ -691,6 +702,7 @@ export function createData(config: CreateDataInput) {
         delete draft.messageLoading[sessionID]
         delete draft.pending[sessionID]
         delete draft.permission[sessionID]
+        delete draft.permissionQueue[sessionID]
         delete draft.form[sessionID]
         for (const [rootID, family] of Object.entries(draft.family)) {
           const next = family.filter((id) => id !== sessionID)
@@ -1309,6 +1321,9 @@ export function createData(config: CreateDataInput) {
           ...(store.session.permission[event.data.sessionID] ?? []),
           event.data,
         ])
+        return
+      case "permission.queued":
+        setStore("session", "permissionQueue", event.data.sessionID, event.data.requests)
         return
       case "permission.replied":
         removePermission(event.data.sessionID, event.data.requestID)
@@ -1939,6 +1954,9 @@ export function createData(config: CreateDataInput) {
       permission: {
         list(sessionID: string) {
           return store.session.permission[sessionID]
+        },
+        queued(sessionID: string) {
+          return store.session.permissionQueue[sessionID]
         },
         sessions() {
           return Object.entries(store.session.permission).flatMap(([sessionID, requests]) =>

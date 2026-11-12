@@ -145,14 +145,56 @@ const layer = Layer.effect(
     const scope = yield* Effect.scope
     const pending = new Map<ID, Pending>()
     const queue = KeyedMutex.makeUnsafe<SessionSchema.ID>()
+    const queued = new Map<SessionSchema.ID, Request[]>()
     let closed = false
 
     const cancelTimer = (item: Pending) => (item.timer === undefined ? Effect.void : Fiber.interrupt(item.timer))
+
+    const publishQueued = (sessionID: SessionSchema.ID) =>
+      bus.publish(Permission.Event.Queued, {
+        sessionID,
+        requests: queued.get(sessionID) ?? [],
+      })
+
+    const enqueue = (request: Request) =>
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          const current = queued.get(request.sessionID) ?? []
+          if (current.some((item) => item.id === request.id)) return
+          queued.set(request.sessionID, [...current, request])
+          yield* publishQueued(request.sessionID).pipe(
+            Effect.onError(() =>
+              Effect.sync(() => {
+                const latest = queued.get(request.sessionID)
+                if (!latest) return
+                const next = latest.filter((item) => item.id !== request.id)
+                if (next.length > 0) queued.set(request.sessionID, next)
+                else queued.delete(request.sessionID)
+              }),
+            ),
+          )
+        }),
+      )
+
+    const dequeue = (sessionID: SessionSchema.ID, requestID: ID) =>
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          const current = queued.get(sessionID)
+          if (!current?.some((item) => item.id === requestID)) return
+          const next = current.filter((item) => item.id !== requestID)
+          if (next.length > 0) queued.set(sessionID, next)
+          else queued.delete(sessionID)
+          yield* publishQueued(sessionID)
+        }),
+      )
 
     const close = Effect.gen(function* () {
       closed = true
       const items = Array.from(pending.values())
       pending.clear()
+      const queuedSessions = Array.from(queued.keys())
+      queued.clear()
+      yield* Effect.forEach(queuedSessions, publishQueued)
       yield* Effect.forEach(items, (item) =>
         cancelTimer(item).pipe(
           Effect.andThen(
@@ -341,17 +383,23 @@ const layer = Layer.effect(
       if (result.effect === "allow") return
       if (!(yield* flags.enabled("permission_queue"))) return yield* prompt(input, result.message, result.timeout)
 
-      return yield* queue.withLock(input.sessionID)(
-        Effect.gen(function* () {
-          // Let create's closed branch settle this waiter without publishing a request.
-          if (closed) return yield* prompt(input, result.message, result.timeout)
-          const current =
-            (yield* saved.revision(location.project.id)) === revision ? result : yield* evaluateInput(input)
-          if (current.effect === "deny") return yield* blocked(current)
-          if (current.effect === "allow") return
-          return yield* prompt(input, current.message, current.timeout)
-        }),
-      )
+      const queuedInput = { ...input, id: input.id ?? ID.create() }
+      const queuedRequest = request(queuedInput, result.message, result.timeout)
+      yield* enqueue(queuedRequest)
+      return yield* queue
+        .withLock(input.sessionID)(
+          Effect.gen(function* () {
+            yield* dequeue(input.sessionID, queuedRequest.id)
+            // Let create's closed branch settle this waiter without publishing a request.
+            if (closed) return yield* prompt(queuedInput, result.message, result.timeout)
+            const current =
+              (yield* saved.revision(location.project.id)) === revision ? result : yield* evaluateInput(queuedInput)
+            if (current.effect === "deny") return yield* blocked(current)
+            if (current.effect === "allow") return
+            return yield* prompt(queuedInput, current.message, current.timeout)
+          }),
+        )
+        .pipe(Effect.ensuring(dequeue(input.sessionID, queuedRequest.id)))
     })
 
     const assertNotDenied = Effect.fn("Permission.assertNotDenied")(function* (input: AssertInput) {

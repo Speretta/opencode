@@ -816,6 +816,19 @@ export type PermissionRequest = {
   expires?: number
 }
 
+export type PermissionRequest1 = {
+  id: PermissionID
+  sessionID: SessionID
+  action: string
+  resources: Array<string>
+  save?: Array<string>
+  metadata?: { [x: string]: any }
+  source?: PermissionSource
+  message?: string
+  timeout?: number
+  expires?: number
+}
+
 export type PermissionSavedInfo = {
   id: PermissionSavedID
   projectID: ProjectID
@@ -2209,6 +2222,15 @@ export type CredentialValue = CredentialOAuth | CredentialKey | CredentialExtern
 
 export type ConnectionInfo = ConnectionCredentialInfo | ConnectionEnvInfo
 
+export type PermissionQueued = {
+  id: EventID
+  created: number
+  metadata?: { [x: string]: any }
+  type: "permission.queued"
+  location?: LocationRef
+  data: { sessionID: SessionID; requests: Array<PermissionRequest1> }
+}
+
 export type PtyCreated = {
   id: EventID
   created: number
@@ -2953,6 +2975,7 @@ export type V2Event =
   | ReferenceUpdated
   | PermissionAsked
   | PermissionReplied
+  | PermissionQueued
   | PluginUpdated
   | ProjectUpdated
   | WorktreeUpdated
@@ -4464,6 +4487,7 @@ export type EventSubscribeInput = {
         | "reference.updated"
         | "permission.asked"
         | "permission.replied"
+        | "permission.queued"
         | "plugin.updated"
         | "project.updated"
         | "worktree.updated"

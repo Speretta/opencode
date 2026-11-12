@@ -10147,6 +10147,7 @@
                     "reference.updated",
                     "permission.asked",
                     "permission.replied",
+                    "permission.queued",
                     "plugin.updated",
                     "project.updated",
                     "worktree.updated",
@@ -10258,6 +10259,7 @@
                           "reference.updated",
                           "permission.asked",
                           "permission.replied",
+                          "permission.queued",
                           "plugin.updated",
                           "project.updated",
                           "worktree.updated",
@@ -25549,6 +25551,9 @@
             "$ref": "#/components/schemas/permission.replied"
           },
           {
+            "$ref": "#/components/schemas/permission.queued"
+          },
+          {
             "$ref": "#/components/schemas/plugin.updated"
           },
           {
@@ -26879,6 +26884,46 @@
               }
             },
             "required": ["id", "sessionID", "action", "resources"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "created", "type", "data"],
+        "additionalProperties": false
+      },
+      "permission.queued": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Event.ID"
+          },
+          "created": {
+            "type": "number"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["permission.queued"]
+          },
+          "location": {
+            "$ref": "#/components/schemas/Location.Ref"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "$ref": "#/components/schemas/Session.ID"
+              },
+              "requests": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Permission.Request"
+                },
+                "description": "Requests waiting in the session permission queue, in admission order."
+              }
+            },
+            "required": ["sessionID", "requests"],
             "additionalProperties": false
           }
         },
