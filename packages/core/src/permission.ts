@@ -13,6 +13,8 @@ import { SessionStore } from "./session/store.js"
 import { Wildcard } from "./util/wildcard.js"
 import { PermissionSaved } from "./permission/saved.js"
 import { PluginHooks } from "./plugin/hooks.js"
+import { Flag } from "./flag.js"
+import { KeyedMutex } from "./effect/keyed-mutex.js"
 
 const PermissionEffect = Permission.Effect
 export { PermissionEffect as Effect }
@@ -139,8 +141,11 @@ const layer = Layer.effect(
     const sessions = yield* SessionStore.Service
     const saved = yield* PermissionSaved.Service
     const hooks = yield* PluginHooks.Service
+    const flags = yield* Flag.Service
     const scope = yield* Effect.scope
     const pending = new Map<ID, Pending>()
+    const queue = KeyedMutex.makeUnsafe<SessionSchema.ID>()
+    let savedRevision = 0
     let closed = false
 
     const cancelTimer = (item: Pending) => (item.timer === undefined ? Effect.void : Fiber.interrupt(item.timer))
@@ -301,40 +306,52 @@ const layer = Layer.effect(
       return { id: value.id, effect: result.effect }
     })
 
-    const assert = Effect.fn("Permission.assert")((input: AssertInput) =>
-      Effect.gen(function* () {
-        if (closed) return yield* Effect.die(new DeclinedError())
-        const result = yield* evaluateInput(input)
-        return yield* Effect.uninterruptibleMask((restore) =>
-          Effect.gen(function* () {
-            if (result.effect === "deny") {
-              return yield* new BlockedError({
-                rules: relevant(input, result.rules),
-                permission: input.action,
-                resources: input.resources,
-                reason: result.message,
-              })
-            }
-            if (result.effect === "allow") return
-            const item = yield* create(request(input, result.message, result.timeout), input.agent)
-            return yield* restore(Deferred.await(item.deferred)).pipe(
-              // Deliberate defect tunnel: leaves wrap execution in blanket `mapError`, which
-              // must not convert a user's decline into model-facing tool output. The decline
-              // resurfaces as a typed failure at SessionModelRequest.executeTool. A decline
-              // WITH feedback (CorrectedError) intentionally stays typed so the leaf can turn
-              // it into ToolFailure and the model continues.
-              Effect.catchTag("Permission.DeclinedError", (error) => Effect.die(error)),
-              Effect.ensuring(
-                Effect.suspend(() => {
-                  if (!pending.delete(item.request.id)) return Effect.void
-                  return cancelTimer(item)
-                }),
-              ),
-            )
-          }),
-        )
-      }),
-    )
+    const prompt = (input: AssertInput, message?: string, timeout?: number) =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const item = yield* create(request(input, message, timeout), input.agent)
+          return yield* restore(Deferred.await(item.deferred)).pipe(
+            // Deliberate defect tunnel: leaves wrap execution in blanket `mapError`, which
+            // must not convert a user's decline into model-facing tool output. The decline
+            // resurfaces as a typed failure at SessionModelRequest.executeTool. A decline
+            // WITH feedback (CorrectedError) intentionally stays typed so the leaf can turn
+            // it into ToolFailure and the model continues.
+            Effect.catchTag("Permission.DeclinedError", (error) => Effect.die(error)),
+            Effect.ensuring(
+              Effect.suspend(() => {
+                if (!pending.delete(item.request.id)) return Effect.void
+                return cancelTimer(item)
+              }),
+            ),
+          )
+        }),
+      )
+
+    const assert = Effect.fn("Permission.assert")(function* (input: AssertInput) {
+      if (closed) return yield* Effect.die(new DeclinedError())
+      const revision = savedRevision
+      const result = yield* evaluateInput(input)
+      const blocked = (value: typeof result) =>
+        new BlockedError({
+          rules: relevant(input, value.rules),
+          permission: input.action,
+          resources: input.resources,
+          reason: value.message,
+        })
+      if (result.effect === "deny") return yield* blocked(result)
+      if (result.effect === "allow") return
+      if (!(yield* flags.enabled("permission_queue"))) return yield* prompt(input, result.message, result.timeout)
+
+      return yield* queue.withLock(input.sessionID)(
+        Effect.gen(function* () {
+          if (closed) return yield* Effect.die(new DeclinedError())
+          const current = savedRevision === revision ? result : yield* evaluateInput(input)
+          if (current.effect === "deny") return yield* blocked(current)
+          if (current.effect === "allow") return
+          return yield* prompt(input, current.message, current.timeout)
+        }),
+      )
+    })
 
     const assertNotDenied = Effect.fn("Permission.assertNotDenied")(function* (input: AssertInput) {
       const result = yield* evaluateInput(input)
@@ -377,6 +394,11 @@ const layer = Layer.effect(
                     resources: existing.request.save,
                   })
                   .pipe(
+                    Effect.andThen(
+                      Effect.sync(() => {
+                        savedRevision++
+                      }),
+                    ),
                     Effect.as("always" as const),
                     Effect.catchCause((cause) =>
                       Effect.logWarning("failed to save permission approval", {
@@ -453,5 +475,13 @@ const layer = Layer.effect(
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [Bus.node, Location.node, Agent.node, SessionStore.node, PermissionSaved.node, PluginHooks.node],
+  deps: [
+    Bus.node,
+    Location.node,
+    Agent.node,
+    SessionStore.node,
+    PermissionSaved.node,
+    PluginHooks.node,
+    Flag.node,
+  ],
 })
