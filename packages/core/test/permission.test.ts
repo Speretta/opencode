@@ -181,6 +181,22 @@ function watchReplies() {
   })
 }
 
+function watchQueued() {
+  return Effect.gen(function* () {
+    const bus = yield* Bus.Service
+    const snapshots: Array<{ sessionID: Session.ID; requests: Permission.Request[] }> = []
+    const unsubscribe = yield* bus.listen((event) => {
+      if (event.type !== Permission.Event.Queued.type) return Effect.void
+      const data = event.data as { sessionID: Session.ID; requests: Permission.Request[] }
+      return Effect.sync(() => {
+        snapshots.push({ sessionID: data.sessionID, requests: data.requests })
+      })
+    })
+    yield* Effect.addFinalizer(() => unsubscribe)
+    return snapshots
+  })
+}
+
 function watchEvents() {
   return Effect.gen(function* () {
     const bus = yield* Bus.Service
@@ -1033,12 +1049,14 @@ describe("Permission queue", () => {
   it.effect("keeps parallel prompts when permission_queue is off", () =>
     Effect.gen(function* () {
       yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const queued = yield* watchQueued()
       const first = yield* forkRequest({ id: Permission.ID.create("per_first") })
       const second = yield* forkRequest({
         id: Permission.ID.create("per_second"),
         resources: ["src/second.ts"],
       })
       yield* Effect.yieldNow
+      expect(queued).toEqual([])
       const firstRequest = yield* Deferred.await(first.asked)
       const secondRequest = yield* Deferred.await(second.asked)
 
@@ -1084,6 +1102,54 @@ describe("Permission queue", () => {
     }),
   )
 
+  itQueued.effect("publishes queued snapshots and reuses the queued request ID when admitted", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const queued = yield* watchQueued()
+      const events = yield* watchEvents()
+      const waiterID = Permission.ID.create("per_waiter")
+      const holder = yield* waitForRequest({ id: Permission.ID.create("per_holder") })
+      const waiter = yield* forkRequest({ id: waiterID })
+      yield* Effect.yieldNow
+
+      // The last snapshot is the waiter; the active holder must never appear in it.
+      expect(queued.at(-1)?.requests.map((request) => request.id)).toEqual([waiterID])
+      const waiting = queued.at(-1)?.requests[0]
+      if (!waiting) throw new Error("Expected a queued permission snapshot")
+      expect(waiting.expires).toBeUndefined()
+
+      yield* holder.service.reply({ requestID: holder.request.id, reply: "once" })
+      yield* Fiber.join(holder.fiber)
+      const asked = yield* Deferred.await(waiter.asked)
+
+      expect(asked.id).toBe(waiting.id)
+      expect(asked.expires).toBeDefined()
+      expect(queued.at(-1)?.requests).toEqual([])
+      expect(events.filter((event) => event.type === Permission.Event.Asked.type).map((event) => event.requestID)).toEqual(
+        [holder.request.id, asked.id],
+      )
+    }),
+  )
+
+  itQueued.effect("removes an interrupted queued request from the snapshot", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
+      const queued = yield* watchQueued()
+      const waiterID = Permission.ID.create("per_waiter")
+      const holder = yield* waitForRequest({ id: Permission.ID.create("per_holder") })
+      const waiter = yield* forkRequest({ id: waiterID })
+      yield* Effect.yieldNow
+      expect(queued.at(-1)?.requests.map((request) => request.id)).toEqual([waiterID])
+
+      yield* Fiber.interrupt(waiter.fiber)
+      expect(queued.at(-1)?.requests).toEqual([])
+      expect(yield* Deferred.isDone(waiter.asked)).toBe(false)
+
+      yield* holder.service.reply({ requestID: holder.request.id, reply: "once" })
+      yield* Fiber.join(holder.fiber)
+    }),
+  )
+
   itQueued.effect("asks queued requests in call order", () =>
     Effect.gen(function* () {
       yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
@@ -1119,6 +1185,7 @@ describe("Permission queue", () => {
       const saved = yield* PermissionSaved.Service
       yield* saved.add({ projectID: Project.ID.global, action: "read", resources: ["docs/*"] })
       const events = yield* watchEvents()
+      const queuedSnapshots = yield* watchQueued()
       const holder = yield* waitForRequest({ id: Permission.ID.create("per_holder") })
       const queued = yield* forkRequest({ id: Permission.ID.create("per_queued") })
       yield* Effect.yieldNow
@@ -1134,6 +1201,7 @@ describe("Permission queue", () => {
 
       expect(yield* Deferred.isDone(queued.asked)).toBe(false)
       expect(yield* queued.service.list()).toEqual([])
+      expect(queuedSnapshots.at(-1)?.requests).toEqual([])
       expect(events.filter((event) => event.type === Permission.Event.Asked.type).map((event) => event.requestID)).toEqual(
         [holder.request.id],
       )
@@ -1346,6 +1414,7 @@ describe("Permission queue", () => {
     Effect.gen(function* () {
       yield* setup([{ action: "read", resource: "*", effect: "ask", timeout: "30s" }])
       const events = yield* watchEvents()
+      const queued = yield* watchQueued()
       const holder = yield* waitForRequest({ id: Permission.ID.create("per_holder") })
       const firstWaiter = yield* forkRequest({ id: Permission.ID.create("per_waiter_first") })
       const secondWaiter = yield* forkRequest({ id: Permission.ID.create("per_waiter_second") })
@@ -1371,6 +1440,7 @@ describe("Permission queue", () => {
       expect(
         events.filter((event) => event.type === Permission.Event.Replied.type).map((event) => event.requestID),
       ).toEqual([holder.request.id])
+      expect(queued.at(-1)?.requests).toEqual([])
     }),
   )
 
