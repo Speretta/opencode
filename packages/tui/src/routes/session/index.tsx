@@ -81,7 +81,12 @@ import { Composer } from "./composer"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
-import { permissionTimerDisc, permissionTimerRemaining, permissionToolFailure } from "../../util/permission"
+import {
+  permissionPresentation,
+  permissionTimerDisc,
+  permissionTimerRemaining,
+  permissionToolFailure,
+} from "../../util/permission"
 import { useToast } from "../../ui/toast"
 import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
@@ -2579,8 +2584,9 @@ function AssistantRetry(props: { retry: SessionMessageAssistant["retry"] }) {
 
 // Pending messages moved to individual tool pending functions
 
-function ToolPart(props: { part: SessionMessageAssistantTool; images?: boolean }) {
+export function ToolPart(props: { part: SessionMessageAssistantTool; images?: boolean }) {
   const display = createMemo(() => toolDisplay(props.part.name))
+  const permission = useToolPermission(() => props.part)
 
   const toolprops = {
     get metadata() {
@@ -2605,6 +2611,12 @@ function ToolPart(props: { part: SessionMessageAssistantTool; images?: boolean }
 
   const content = (
     <Switch>
+      <Match when={permission() === "active"}>
+        <PermissionToolRow part={props.part} state="active" />
+      </Match>
+      <Match when={permission() === "queued"}>
+        <PermissionToolRow part={props.part} state="queued" />
+      </Match>
       <Match when={display() === "shell"}>
         <Shell {...toolprops} />
       </Match>
@@ -2852,6 +2864,67 @@ function usePermissionTimer(part: () => SessionMessageAssistantTool | undefined)
     if (current.expires === undefined || current.timeout === undefined) return "○"
     return permissionTimerDisc(permissionTimerRemaining(current.expires, current.timeout, now()), current.timeout)
   })
+}
+
+const permissionSummaryActions = new Set([
+  "edit",
+  "read",
+  "list",
+  "glob",
+  "grep",
+  "shell",
+  "subagent",
+  "webfetch",
+  "websearch",
+  "lsp",
+  "external_directory",
+])
+
+function permissionToolSummary(part: SessionMessageAssistantTool, formatPath: (value: string) => string) {
+  const input = typeof part.state.input === "string" ? {} : part.state.input
+  const action = canonicalToolName(part.name)
+  if (!permissionSummaryActions.has(action)) return genericToolSummary(part.name, input)
+  const presentation = permissionPresentation(
+    {
+      action,
+      resources: [],
+      input,
+      metadata: part.state.status === "streaming" ? undefined : part.state.metadata,
+    },
+    formatPath,
+  )
+  return action === "shell" ? (presentation.lines[0] ?? presentation.title) : presentation.title
+}
+
+function PermissionToolRow(props: { part: SessionMessageAssistantTool; state: "active" | "queued" }) {
+  const theme = useTheme()
+  const pathFormatter = usePathFormatter()
+  const disc = usePermissionTimer(() => props.part)
+  const summary = createMemo(() => permissionToolSummary(props.part, pathFormatter.format))
+  const active = createMemo(() => props.state === "active")
+  const borderColor = createMemo(() => {
+    const warning = theme.text.feedback.warning.base
+    return RGBA.fromValues(warning.r, warning.g, warning.b, warning.a * 0.5)
+  })
+  return (
+    <box
+      flexShrink={0}
+      border={active() ? ["left"] : undefined}
+      borderColor={active() ? borderColor() : undefined}
+      customBorderChars={active() ? SplitBorder.customBorderChars : undefined}
+      paddingLeft={active() ? 0 : 1}
+    >
+      <InlineToolRow
+        icon={disc() ?? "○"}
+        color={active() ? theme.text.feedback.warning.base : theme.text.muted}
+        complete={active()}
+        pending={summary()}
+        spinner={!active()}
+      >
+        {summary()}
+      </InlineToolRow>
+    </box>
+  )
 }
 
 function usePermissionVisual(
