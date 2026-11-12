@@ -16679,6 +16679,9 @@
               "mcp_events": {
                 "type": "boolean"
               },
+              "permission_queue": {
+                "type": "boolean"
+              },
               "part_rows": {
                 "type": "boolean"
               },
