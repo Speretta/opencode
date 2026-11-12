@@ -344,9 +344,10 @@ are serialized per session and admitted FIFO. A second tool waits instead of
 starting its own timer, so each prompt gets its full timeout window. In an
 unattended session, N queued prompts can therefore mean N times the wait.
 `always` on the active prompt auto-allows a queued assert whose rules then
-match, without a second prompt. Closing the permission service or interrupting
-the active request releases the queue. The flag is off in release builds by
-default; enable it with `experimental.permission_queue` or
+match, without a second prompt. Queued tool rows stay visible with a waiting
+indicator, while only the active prompt is interactive. Closing the permission
+service or interrupting the active request releases the queue. The flag is off
+in release builds by default; enable it with `experimental.permission_queue` or
 `OPENCODE_FLAGS=permission_queue`. HTTP-created `ask` requests are not queued.
 
 ## Policies
