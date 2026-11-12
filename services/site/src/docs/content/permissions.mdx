@@ -293,8 +293,10 @@ Review broad approvals and remove those no longer needed. If saving the approval
 fails, the current request is approved once and the next matching request
 prompts again.
 
-Clients may attach feedback when rejecting. Non-interactive clients must decide
-how to handle approval requests; configured `deny` rules always remain enforced.
+Clients may attach feedback when rejecting. Rejecting a tool prompt fails that
+tool with a model-facing reason and the agent continues; interrupting the run
+stops it. Non-interactive clients must decide how to handle approval requests;
+configured `deny` rules always remain enforced.
 
 ## Timeouts
 
