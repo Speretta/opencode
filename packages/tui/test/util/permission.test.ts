@@ -3,9 +3,11 @@ import {
   permissionPresentation,
   permissionTimerBar,
   permissionTimerBarCells,
+  permissionTimerDisc,
   permissionTimerLabel,
   permissionTimerPhase,
   permissionTimerRemaining,
+  permissionToolFailure,
 } from "../../src/util/permission"
 
 test("preserves permission roots and self-contained metadata", () => {
@@ -69,4 +71,25 @@ test("fills the bar proportionally with block glyphs", () => {
   expect(permissionTimerBar(50_000, 60_000, 10)).toEqual({ filled: "█".repeat(9), empty: "░" })
   expect(permissionTimerBar(30_000, 60_000, 10)).toEqual({ filled: "█".repeat(5), empty: "░".repeat(5) })
   expect(permissionTimerBar(0, 60_000, 10)).toEqual({ filled: "", empty: "░".repeat(10) })
+})
+
+test("shows the remaining-time disc in four bands", () => {
+  expect(permissionTimerDisc(100, 100)).toBe("○")
+  expect(permissionTimerDisc(80, 100)).toBe("○")
+  expect(permissionTimerDisc(75, 100)).toBe("◔")
+  expect(permissionTimerDisc(60, 100)).toBe("◔")
+  expect(permissionTimerDisc(50, 100)).toBe("◑")
+  expect(permissionTimerDisc(30, 100)).toBe("◑")
+  expect(permissionTimerDisc(25, 100)).toBe("◕")
+  expect(permissionTimerDisc(0, 100)).toBe("◕")
+  expect(permissionTimerDisc(0, 0)).toBe("○")
+})
+
+test("classifies timeout and rejected tool failures", () => {
+  expect(permissionToolFailure("Permission read timed out after 30s", "permission.rejected")).toBe("timeout")
+  expect(permissionToolFailure("not now", "permission.rejected")).toBe("rejected")
+  expect(permissionToolFailure("rejected permission")).toBe("rejected")
+  expect(permissionToolFailure("QuestionRejectedError")).toBe("rejected")
+  expect(permissionToolFailure("boom", "tool.execution")).toBeUndefined()
+  expect(permissionToolFailure(undefined)).toBeUndefined()
 })
